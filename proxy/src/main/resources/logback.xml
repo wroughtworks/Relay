@@ -1,0 +1,35 @@
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss} %highlight(%-5level) %cyan(%logger{20}) - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Rolling file output, sized for the homelab deployment in spec §9 rather than
+       for a fleet: enough history to debug last week, not enough to fill a volume. -->
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>logs/relay.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>logs/relay.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+      <maxFileSize>16MB</maxFileSize>
+      <maxHistory>7</maxHistory>
+      <totalSizeCap>256MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="io.netty" level="INFO"/>
+
+  <!-- Raise Relay's own logging without touching this file:
+         java -Drelay.log.level=DEBUG -jar relay.jar
+       DEBUG adds the per-connection detail needed to diagnose a backend that will not
+       accept logins, including full stack traces for connection failures. -->
+  <logger name="dev.relay" level="${relay.log.level:-INFO}"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </root>
+</configuration>

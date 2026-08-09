@@ -1,0 +1,7 @@
+name: RelayDebug
+version: '${version}'
+main: dev.relay.debug.RelayDebugPlugin
+api-version: '1.20'
+author: Relay
+description: Reports why player connections close, including the ones Paper closes silently.
+load: POSTWORLD

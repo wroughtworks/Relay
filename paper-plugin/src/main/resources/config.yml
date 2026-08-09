@@ -1,0 +1,12 @@
+# RelayDebug
+#
+# Reports why player connections close. Paper logs pipeline faults at DEBUG and
+# says nothing at all when a channel is closed before its exception handler runs,
+# which is why a connection can disappear with no recorded reason.
+
+# Log every packet in and out, by class name.
+#
+# Extremely verbose --- thousands of lines per second per player --- and only
+# useful for a short, targeted session. Leave this off unless you are watching a
+# specific join fail.
+log-packets: false

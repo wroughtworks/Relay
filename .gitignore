@@ -1,0 +1,25 @@
+build/
+.gradle/
+out/
+bin/
+
+# `gradle run` working directory: generated config, logs, and the forwarding secret.
+run/
+
+# Docker compose bind mount, same contents.
+data/
+
+logs/
+*.log
+
+# relay.py: linked backend paths, and pid/log files for servers it started.
+relay-dev.json
+.relay-run/
+
+relay.toml
+forwarding.secret
+
+.idea/
+*.iml
+.vscode/
+.DS_Store

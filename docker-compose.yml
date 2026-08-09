@@ -1,0 +1,39 @@
+# Runs Relay alongside an existing stack. Per the cutover plan in spec §10, point this
+# at a spare port first and test against it before moving traffic off Velocity.
+
+services:
+  relay:
+    build: .
+    image: relay:0.1.0
+    container_name: relay
+    restart: unless-stopped
+
+    ports:
+      # Host 25577 while testing side by side; switch to 25565:25565 at cutover.
+      - "25577:25565"
+
+    volumes:
+      # relay.toml, logs and the forwarding secret. Created on first start.
+      - ./data:/relay/data
+
+    environment:
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC"
+
+    # stdin_open keeps the proxy console usable via `docker attach relay`. Without it
+    # the proxy still runs fine, it just has no console.
+    stdin_open: true
+    tty: true
+
+    healthcheck:
+      # A TCP connect is enough to prove the listener is up without speaking protocol.
+      test: ["CMD-SHELL", "nc -z localhost 25565 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # Backends are reached over the host network in a typical homelab layout. If your
+    # Paper servers are containers on a shared network, join it here instead and use
+    # their service names in relay.toml.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

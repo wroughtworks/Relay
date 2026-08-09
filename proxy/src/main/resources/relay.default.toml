@@ -1,0 +1,168 @@
+# Relay proxy configuration.
+#
+# Generated on first start. This file is the single source of truth for proxy
+# settings -- nothing here is duplicated in the database, so it stays git-able.
+#
+# TOML note: every key below a [table] header belongs to that table. All the
+# top-level settings therefore come first, and the tables come last. Adding a
+# plain setting at the bottom of this file will not do what you want.
+
+
+# ----------------------------------------------------------------- network
+
+# Where players connect. Use 0.0.0.0 to accept from anywhere.
+bind = "0.0.0.0:25565"
+
+# Server list entry. MiniMessage formatting: <red>, <bold>, <gradient:#a:#b>,
+# \n for a second line. See https://docs.advntr.dev/minimessage/format.html
+motd = "<gradient:#5e81ac:#88c0d0><bold>Relay</bold></gradient>\n<gray>A custom Minecraft proxy"
+
+max-players = 100
+
+# Whether the server list shows the real player count and a name sample.
+show-online-count = true
+
+# Authenticate players against Mojang. Leave this true unless you have a
+# specific reason not to -- with it false, anyone can log in as anyone.
+online-mode = true
+
+# The brand shown in the player's F3 debug screen.
+brand = "Relay"
+
+
+# ----------------------------------------------------------------- forwarding
+#
+# How backends learn who a player is.
+#
+#   modern  Velocity-style, HMAC signed. Backends must set the same secret.
+#           On Paper: config/paper-global.yml -> proxies.velocity.enabled: true
+#   legacy  BungeeCord-style. No signature at all -- only safe when backend
+#           ports are unreachable from outside your network.
+#   none    No forwarding. Local testing only.
+#
+# In every mode, each backend needs online-mode=false in its server.properties:
+# the proxy has already authenticated the player.
+
+forwarding-mode = "modern"
+
+# Must match the secret on every backend. Generated fresh for this install.
+forwarding-secret = "CHANGE-ME"
+
+# Alternatively, keep it out of this file. Path is relative to this config.
+# forwarding-secret-file = "forwarding.secret"
+
+
+# ----------------------------------------------------------------- routing
+
+# Where players land on join, in order. Each is tried until one accepts.
+try = ["lobby", "survival"]
+
+
+# ----------------------------------------------------------------- tuning
+
+# Packets at or above this many bytes are compressed. -1 disables compression.
+#
+# This governs the PLAYER connection only. Each backend dictates compression on its
+# own link via the Set Compression packet it sends during login, so turning this
+# off does not turn it off between Relay and a backend -- change
+# network-compression-threshold in that server's server.properties for that.
+compression-threshold = 256
+
+# zlib level: -1 for the library default, 0 none, 9 slowest and smallest.
+compression-level = -1
+
+# How long to wait for a backend TCP connection, in milliseconds.
+connect-timeout = 5000
+
+# Drop a connection that sends nothing for this long, in milliseconds.
+read-timeout = 30000
+
+# Let Relay claim /server, /glist, /find and /send before backends see them.
+# Turn off to pass every command through untouched.
+intercept-commands = true
+
+
+# ----------------------------------------------------------------- proxy protocol
+#
+# The HAProxy PROXY header prefixes a TCP connection with the address of the client
+# that originally opened it, so the far end can see past the proxy in between.
+
+# Send a PROXY header to each backend. Turn this on if your backends run with
+# proxies.proxy-protocol: true in paper-global.yml -- such a backend reads nothing
+# at all until the header arrives, so a mismatch here looks like a server that
+# accepts the connection and then never answers.
+proxy-protocol-send = false
+
+# ----------------------------------------------------------------- client api
+#
+# Lets a client-side mod talk to the proxy over the "relay:api_v1" plugin channel:
+# a live server list, switch requests with progress, and whatever is added later.
+#
+# Vanilla clients are unaffected -- the conversation only starts if a client sends
+# a hello, and Relay never sends unsolicited. Requests are permission-checked
+# against the same nodes as the in-game commands and rate limited, so a modded
+# client gains nothing it could not do by typing /server.
+#
+# See docs/client-api.md for the wire format.
+client-api = true
+
+# Record what closes each connection, with a stack trace naming the code that did
+# it. Diagnostic only -- turn it on when a connection is dying for no stated
+# reason, since "the peer hung up" and "something here hung up" are otherwise
+# indistinguishable once the socket is gone.
+trace-closes = false
+
+
+# Read a PROXY header from incoming connections. Only for when something sits in
+# front of Relay, such as HAProxy or a load balancer.
+#
+# Security: this trusts the header completely. Anything that can open a connection
+# to the listener can claim any source address, defeating per-IP bans and logging.
+# Enable it only when the bind port is reachable solely by that upstream proxy.
+proxy-protocol-receive = false
+
+
+# ----------------------------------------------------------------- backends
+
+[servers]
+lobby = "127.0.0.1:25566"
+survival = "127.0.0.1:25567"
+# Geyser runs as an ordinary backend; Relay does not speak Bedrock itself.
+# bedrock = "127.0.0.1:25568"
+
+
+# ----------------------------------------------------------------- forced hosts
+#
+# Send players straight to a backend based on the hostname they connected to,
+# bypassing the "try" order above.
+
+# [forced-hosts]
+# "survival.example.com" = ["survival"]
+
+
+# ----------------------------------------------------------------- permissions
+#
+# Nodes are shared between in-game commands and (later) the dashboard, so a role
+# defined here means the same thing in both places. "relay.*" matches any node
+# beginning "relay."; "*" matches everything.
+
+[permissions]
+default = ["relay.command.server", "relay.command.glist"]
+# Grant by username or by UUID:
+# "yourname" = ["relay.*"]
+# "00000000-0000-0000-0000-000000000000" = ["relay.command.send"]
+
+
+# ----------------------------------------------------------------- protocol
+#
+# Escape hatch for Minecraft updates. Play-state packet ids shift whenever
+# Mojang inserts a packet, and Relay depends on a handful of them. If a version
+# lands before a Relay release does, correct the id here instead of waiting for
+# a build.
+#
+# Key format:  "state.direction.packet.protocolVersion" = id
+# Packets:     play.serverbound -> chat_command, configuration_acknowledged
+#              play.clientbound -> disconnect, system_chat, start_configuration
+
+# [protocol.overrides]
+# "play.clientbound.start_configuration.772" = 0x71
