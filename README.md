@@ -11,7 +11,7 @@ modes. No dashboard, no plugin system — those are phases 2 and 3.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Built, untested against a live client** |
+| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Built** |
 | 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | Not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
