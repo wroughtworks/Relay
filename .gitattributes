@@ -1,0 +1,17 @@
+# Store text with LF in the repository; check it out with whatever the platform
+# uses. Without this, a Windows checkout commits CRLF and the files below break.
+* text=auto
+
+# Executed by a shell, including inside the Docker build, which runs on Linux.
+# CRLF here produces "bad interpreter" or a silently broken build.
+gradlew     text eol=lf
+*.sh        text eol=lf
+
+# Read by cmd.exe, which wants CRLF.
+gradlew.bat text eol=crlf
+*.bat       text eol=crlf
+
+# Never touched.
+*.jar  binary
+*.png  binary
+*.ico  binary
