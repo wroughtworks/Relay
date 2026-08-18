@@ -10,3 +10,7 @@
 # useful for a short, targeted session. Leave this off unless you are watching a
 # specific join fail.
 log-packets: false
+
+# Run the read-only backend API checks automatically when a player joins, and
+# print what came back. Read-only: nothing here moves a player or changes state.
+probe-on-join: true

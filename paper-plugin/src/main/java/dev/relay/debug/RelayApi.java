@@ -4,10 +4,11 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.util.function.Consumer;
 
 /**
  * A typed wrapper around the proxy's plugin-message API, for use from a backend plugin.
@@ -164,14 +165,23 @@ public final class RelayApi {
         carrier.sendPluginMessage(plugin, CHANNEL, bytes.toByteArray());
     }
 
-    /** Convenience for reading a reply body without repeating the stream plumbing. */
-    public static void read(byte[] message, Consumer<java.io.DataInputStream> reader) {
-        try (java.io.DataInputStream in =
-                     new java.io.DataInputStream(new java.io.ByteArrayInputStream(message))) {
-            reader.accept(in);
+    /**
+     * Convenience for reading a reply body without repeating the stream plumbing.
+     *
+     * <p>The reader may throw {@link IOException}, because every {@code DataInputStream}
+     * read does; a plain {@code Consumer} would force every caller to wrap each field.
+     */
+    public static void read(byte[] message, Reader reader) {
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(message))) {
+            reader.read(in);
         } catch (IOException e) {
             throw new IllegalStateException("failed to read a Relay API reply", e);
         }
+    }
+
+    @FunctionalInterface
+    public interface Reader {
+        void read(DataInputStream in) throws IOException;
     }
 
     @FunctionalInterface

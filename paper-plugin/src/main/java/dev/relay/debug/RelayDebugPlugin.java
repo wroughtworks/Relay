@@ -20,6 +20,7 @@ import java.util.logging.Level;
 public final class RelayDebugPlugin extends JavaPlugin {
 
     private ConnectionInspector inspector;
+    private BackendApiProbe probe;
 
     @Override
     public void onEnable() {
@@ -27,7 +28,12 @@ public final class RelayDebugPlugin extends JavaPlugin {
         boolean logPackets = getConfig().getBoolean("log-packets", false);
 
         inspector = new ConnectionInspector(this, logPackets);
-        getServer().getPluginManager().registerEvents(new DisconnectListener(this, inspector), this);
+        probe = new BackendApiProbe(this);
+        probe.register();
+
+        getServer().getPluginManager().registerEvents(
+                new DisconnectListener(this, inspector, probe, getConfig().getBoolean("probe-on-join", true)), this);
+        getCommand("relaytest").setExecutor(new RelayTestCommand(this, probe));
 
         getLogger().info("Watching player connections for unexplained closes.");
         if (logPackets) {

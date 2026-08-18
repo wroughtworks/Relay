@@ -20,15 +20,26 @@ final class DisconnectListener implements Listener {
 
     private final RelayDebugPlugin plugin;
     private final ConnectionInspector inspector;
+    private final BackendApiProbe probe;
+    private final boolean probeOnJoin;
 
-    DisconnectListener(RelayDebugPlugin plugin, ConnectionInspector inspector) {
+    DisconnectListener(RelayDebugPlugin plugin, ConnectionInspector inspector,
+                       BackendApiProbe probe, boolean probeOnJoin) {
         this.plugin = plugin;
         this.inspector = inspector;
+        this.probe = probe;
+        this.probeOnJoin = probeOnJoin;
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onJoin(PlayerJoinEvent event) {
         inspector.attach(event.getPlayer());
+        if (probeOnJoin) {
+            // A tick later: plugin messages need the player's channels registered, which
+            // has not finished at the moment the join event fires.
+            plugin.getServer().getScheduler().runTaskLater(plugin,
+                    () -> probe.probe(event.getPlayer()), 20L);
+        }
     }
 
     /** Lowest priority so the reason is seen before another plugin can change it. */
