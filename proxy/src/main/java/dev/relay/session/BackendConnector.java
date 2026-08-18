@@ -62,7 +62,8 @@ public final class BackendConnector {
 
     /** Walks the configured try order, or the forced host for the address the player used. */
     public void connectToInitialServer() {
-        List<String> candidates = proxy.config().initialCandidates(player.virtualHost());
+        List<RegisteredServer> candidates = proxy.resolveAll(
+                proxy.config().initialCandidates(player.virtualHost()));
         if (!player.beginRecovery()) {
             LOG.warn("{} is already being connected somewhere; ignoring a second initial connect",
                     player.username());
@@ -112,11 +113,15 @@ public final class BackendConnector {
             return;
         }
 
-        List<String> candidates = proxy.config().initialCandidates(player.virtualHost()).stream()
-                .filter(name -> !name.equals(lost.name()))
+        // Resolved before filtering, so a group is excluded one member at a time: losing
+        // survival-01 leaves survival-02 as the first thing tried, which is the whole
+        // point of running more than one.
+        List<RegisteredServer> candidates = proxy.resolveAll(
+                        proxy.config().initialCandidates(player.virtualHost())).stream()
+                .filter(candidate -> candidate != lost)
                 .toList();
         if (candidates.isEmpty()) {
-            LOG.info("Nowhere to move {} after losing {}: it is the only server they could be sent to",
+            LOG.info("Nowhere to move {} after losing {}: it is the only backend they could be sent to",
                     player.username(), lost.name());
             giveUp(reason);
             return;
@@ -132,7 +137,7 @@ public final class BackendConnector {
         }
 
         LOG.info("Moving {} off {} after it dropped them; trying {}",
-                player.username(), lost.name(), candidates);
+                player.username(), lost.name(), names(candidates));
         // Said now, while the player is still in play state: the switch takes them out of
         // it, and chat sent in configuration state has nowhere to render.
         player.sendMessage(Component.text().append(reason)
@@ -152,7 +157,11 @@ public final class BackendConnector {
         player.disconnect(reason);
     }
 
-    private void tryCandidate(List<String> candidates, int index, Component lastReason) {
+    private static List<String> names(List<RegisteredServer> candidates) {
+        return candidates.stream().map(RegisteredServer::name).toList();
+    }
+
+    private void tryCandidate(List<RegisteredServer> candidates, int index, Component lastReason) {
         if (!player.isActive()) {
             player.endRecovery();
             return;
@@ -164,14 +173,7 @@ public final class BackendConnector {
             return;
         }
 
-        String name = candidates.get(index);
-        RegisteredServer server = proxy.server(name).orElse(null);
-        if (server == null) {
-            LOG.warn("Fallback list names unknown backend '{}'", name);
-            tryCandidate(candidates, index + 1, lastReason);
-            return;
-        }
-
+        RegisteredServer server = candidates.get(index);
         connect(server).whenComplete((result, error) -> player.connection().channel().eventLoop().execute(() -> {
             if (error != null) {
                 LOG.error("Error connecting {} to {}", player.username(), server.name(), error);

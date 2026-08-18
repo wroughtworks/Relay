@@ -122,18 +122,19 @@ public final class ConfigLoader {
             throw new IllegalArgumentException("No backends defined; add at least one entry under [servers]");
         }
 
+        Map<String, List<String>> groups = parseGroups(config, servers);
+        BalanceStrategy balance = BalanceStrategy.parse(config.getOrElse("balance", "least-players"));
+
         List<String> tryOrder = config.getOrElse("try", List.<String>of());
         if (tryOrder.isEmpty()) {
             // Fall back to the first declared backend so a minimal config still works.
             tryOrder = List.of(servers.keySet().iterator().next());
         }
         for (String name : tryOrder) {
-            if (!servers.containsKey(name)) {
-                throw new IllegalArgumentException("try lists unknown backend '" + name + "'");
-            }
+            requireDestination(servers, groups, name, "try");
         }
 
-        Map<String, List<String>> forcedHosts = parseForcedHosts(config, servers);
+        Map<String, List<String>> forcedHosts = parseForcedHosts(config, servers, groups);
         Map<String, List<String>> permissions = parsePermissions(config);
         List<ProtocolOverride> overrides = parseProtocolOverrides(config);
 
@@ -141,7 +142,7 @@ public final class ConfigLoader {
                 bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
-                servers, tryOrder, forcedHosts, permissions, overrides);
+                servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }
 
     /**
@@ -180,7 +181,52 @@ public final class ConfigLoader {
         return servers;
     }
 
-    private static Map<String, List<String>> parseForcedHosts(Config config, Map<String, ServerEntry> servers) {
+    /**
+     * Reads {@code [groups]}: a name, and the interchangeable backends behind it.
+     *
+     * <p>Validated strictly, because every mistake here is otherwise silent at startup
+     * and confusing later. A group that shadows a backend name would make {@code /server}
+     * ambiguous; a group naming a backend that does not exist would send players nowhere
+     * the first time that member came up in the rotation.
+     */
+    private static Map<String, List<String>> parseGroups(Config config, Map<String, ServerEntry> servers) {
+        Config section = config.get("groups");
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        if (section == null) {
+            return groups;
+        }
+        for (Config.Entry entry : section.entrySet()) {
+            String name = entry.getKey().toLowerCase(Locale.ROOT);
+            if (servers.containsKey(name)) {
+                throw new IllegalArgumentException("Group '" + name + "' has the same name as a backend; "
+                        + "one name cannot mean both");
+            }
+            Object value = entry.getValue();
+            List<String> members = value instanceof String single ? List.of(single) : entry.getValue();
+            if (members.isEmpty()) {
+                throw new IllegalArgumentException("Group '" + name + "' lists no backends");
+            }
+            for (String member : members) {
+                if (!servers.containsKey(member)) {
+                    throw new IllegalArgumentException(
+                            "Group '" + name + "' names unknown backend '" + member + "'");
+                }
+            }
+            groups.put(name, List.copyOf(members));
+        }
+        return groups;
+    }
+
+    /** Accepts either a backend or a group, since anywhere a player can be sent takes both. */
+    private static void requireDestination(Map<String, ServerEntry> servers, Map<String, List<String>> groups,
+                                           String name, String where) {
+        if (!servers.containsKey(name) && !groups.containsKey(name.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException(where + " names unknown backend or group '" + name + "'");
+        }
+    }
+
+    private static Map<String, List<String>> parseForcedHosts(Config config, Map<String, ServerEntry> servers,
+                                                              Map<String, List<String>> groups) {
         Config section = config.get("forced-hosts");
         Map<String, List<String>> hosts = new LinkedHashMap<>();
         if (section == null) {
@@ -190,10 +236,7 @@ public final class ConfigLoader {
             Object value = entry.getValue();
             List<String> targets = value instanceof String single ? List.of(single) : entry.getValue();
             for (String target : targets) {
-                if (!servers.containsKey(target)) {
-                    throw new IllegalArgumentException(
-                            "forced-hosts entry '" + entry.getKey() + "' names unknown backend '" + target + "'");
-                }
+                requireDestination(servers, groups, target, "forced-hosts entry '" + entry.getKey() + "'");
             }
             hosts.put(entry.getKey().toLowerCase(Locale.ROOT), List.copyOf(targets));
         }

@@ -156,6 +156,35 @@ trace-closes = true
 proxy-protocol-receive = false
 
 
+# ------------------------------------------------------------------- groups
+#
+# Several interchangeable backends under one name. Players type "/server
+# survival" and land on whichever member is the better host right now; naming a
+# member directly still works, which is how someone rejoins the server their
+# base is on.
+#
+# A group can be used anywhere a backend can: "try", forced hosts, /send, and
+# the plugin-message APIs. Group names must not collide with backend names.
+#
+# [groups]
+# survival = ["survival-01", "survival-02"]
+# pvp = ["pvp-01", "pvp-02"]
+
+
+# How a group picks. The choice only ever orders the members -- the preferred
+# one is tried first and the rest catch its failures -- so balancing and
+# failover are the same mechanism rather than two that have to agree.
+#
+#   least-players    fewest players first. Fills an empty server before a busy
+#                    one, and self-corrects as people come and go.
+#   round-robin      each join takes the next member in turn. Better when
+#                    players arrive in waves and player counts lag the truth.
+#   random           cheap, stateless, even enough over any real number of joins.
+#   first-available  configured order, always. Not balancing: later members
+#                    exist only to catch failures of earlier ones.
+balance = "least-players"
+
+
 # ----------------------------------------------------------------- backends
 
 [servers]

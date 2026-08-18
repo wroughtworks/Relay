@@ -7,6 +7,7 @@ import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
+import dev.relay.proxy.ServerGroup;
 import dev.relay.session.BackendConnector;
 import io.netty.buffer.ByteBuf;
 import net.kyori.adventure.text.Component;
@@ -123,11 +124,19 @@ public final class BackendApiHandler {
                 out.writeUTF(Sub.GET_SERVERS);
                 out.writeUTF(names.toString());
             });
+            case Sub.GET_GROUPS -> reply(channel, out -> {
+                StringJoiner names = new StringJoiner(", ");
+                proxy.groups().forEach(g -> names.add(g.name()));
+                out.writeUTF(Sub.GET_GROUPS);
+                out.writeUTF(names.toString());
+            });
             case Sub.PLAYER_COUNT -> {
                 String target = in.readUTF();
                 int count = target.equalsIgnoreCase("ALL")
                         ? proxy.players().count()
-                        : proxy.server(target).map(RegisteredServer::playerCount).orElse(0);
+                        : proxy.group(target).map(ServerGroup::playerCount)
+                                .or(() -> proxy.server(target).map(RegisteredServer::playerCount))
+                                .orElse(0);
                 reply(channel, out -> {
                     out.writeUTF(Sub.PLAYER_COUNT);
                     out.writeUTF(target);
@@ -140,7 +149,9 @@ public final class BackendApiHandler {
                 if (target.equalsIgnoreCase("ALL")) {
                     proxy.players().snapshot().forEach(p -> names.add(p.username()));
                 } else {
-                    proxy.server(target).ifPresent(s -> s.players().forEach(p -> names.add(p.username())));
+                    for (RegisteredServer source : membersOf(target)) {
+                        source.players().forEach(p -> names.add(p.username()));
+                    }
                 }
                 reply(channel, out -> {
                     out.writeUTF(Sub.PLAYER_LIST);
@@ -211,10 +222,20 @@ public final class BackendApiHandler {
         }
     }
 
+    /** Every backend a name covers, so a group is addressable wherever one server is. */
+    private List<RegisteredServer> membersOf(String name) {
+        return proxy.group(name)
+                .map(ServerGroup::members)
+                .orElseGet(() -> proxy.server(name).map(List::of).orElse(List.of()));
+    }
+
     private void connect(ConnectedPlayer player, String targetName) {
-        Optional<RegisteredServer> target = proxy.server(targetName);
+        // A group name works here too. Existing BungeeCord plugins send whatever the
+        // operator configured, so making groups usable is a matter of resolving the
+        // name the same way /server does rather than of any new sub-channel.
+        Optional<RegisteredServer> target = proxy.select(targetName);
         if (target.isEmpty()) {
-            LOG.warn("Backend {} asked to move {} to unknown server '{}'",
+            LOG.warn("Backend {} asked to move {} to unknown server or group '{}'",
                     server.target().name(), player.username(), targetName);
             return;
         }
@@ -246,15 +267,18 @@ public final class BackendApiHandler {
                 }
             }
         } else {
-            proxy.server(targetName).ifPresent(target -> {
+            // Every member when the name is a group: a payload addressed to "survival"
+            // means all of it, since which member a given player is on is Relay's
+            // business rather than the sending plugin's.
+            for (RegisteredServer target : membersOf(targetName)) {
                 for (ConnectedPlayer player : target.players()) {
                     ServerConnection connection = player.connectedServer();
                     if (connection != null) {
                         destinations.add(connection);
-                        return;
+                        break;
                     }
                 }
-            });
+            }
         }
         forwardTo(channel, destinations, in);
     }

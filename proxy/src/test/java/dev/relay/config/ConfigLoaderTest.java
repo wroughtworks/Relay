@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -225,6 +226,85 @@ class ConfigLoaderTest {
                 """);
         assertTrue(assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(hostPath))
                 .getMessage().contains("missing"));
+    }
+
+    @Test
+    void parsesGroupsAndLetsThemBeUsedAsDestinations(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+                balance = "round-robin"
+                try = ["survival"]
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+                survival-01 = "127.0.0.1:25567"
+                survival-02 = "127.0.0.1:25568"
+
+                [groups]
+                survival = ["survival-01", "survival-02"]
+
+                [forced-hosts]
+                "pvp.example.com" = ["survival"]
+                """);
+
+        RelayConfig config = ConfigLoader.load(path);
+        assertEquals(List.of("survival-01", "survival-02"), config.groups().get("survival"));
+        assertEquals(BalanceStrategy.ROUND_ROBIN, config.balance());
+        // Both places that name a destination must accept a group, or a group is only
+        // half a destination: reachable by command but not by the routing that puts
+        // players somewhere in the first place.
+        assertEquals(List.of("survival"), config.tryOrder());
+        assertEquals(List.of("survival"), config.initialCandidates("pvp.example.com"));
+    }
+
+    @Test
+    void rejectsGroupsThatWouldMakeANameAmbiguousOrEmpty(@TempDir Path dir) throws IOException {
+        // A group sharing a backend's name: /server lobby could mean either, and which
+        // one it meant would depend on lookup order rather than on anything written down.
+        Path shadow = dir.resolve("shadow.toml");
+        Files.writeString(shadow, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+
+                [groups]
+                lobby = ["lobby"]
+                """);
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(shadow))
+                .getMessage().contains("same name"));
+
+        // A member that does not exist would send players nowhere, but only once the
+        // rotation reached it -- so it has to fail at startup, not at that moment.
+        Path missing = dir.resolve("missing.toml");
+        Files.writeString(missing, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+
+                [groups]
+                survival = ["survival-01"]
+                """);
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(missing))
+                .getMessage().contains("survival-01"));
+
+        Path empty = dir.resolve("empty.toml");
+        Files.writeString(empty, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+
+                [groups]
+                survival = []
+                """);
+        assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(empty));
     }
 
     @Test

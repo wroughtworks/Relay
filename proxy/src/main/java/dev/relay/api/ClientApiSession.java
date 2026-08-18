@@ -188,7 +188,7 @@ public final class ClientApiSession {
             return;
         }
 
-        RegisteredServer server = proxy.server(target).orElse(null);
+        RegisteredServer server = proxy.select(target).orElse(null);
         if (server == null) {
             sendError(Error.UNKNOWN_SERVER);
             return;

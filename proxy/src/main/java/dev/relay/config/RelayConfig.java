@@ -36,6 +36,8 @@ public record RelayConfig(
         boolean backendApiEnabled,
         boolean traceCloses,
         Map<String, ServerEntry> servers,
+        Map<String, List<String>> groups,
+        BalanceStrategy balance,
         List<String> tryOrder,
         Map<String, List<String>> forcedHosts,
         Map<String, List<String>> permissions,
@@ -46,6 +48,9 @@ public record RelayConfig(
         // in /server and in the startup log, and it decides the implicit fallback when no
         // "try" list is given. Map.copyOf would scramble it.
         servers = Collections.unmodifiableMap(new LinkedHashMap<>(servers));
+        // Order matters here too: it is the order a group's members are tried when the
+        // strategy has nothing to separate them.
+        groups = Collections.unmodifiableMap(new LinkedHashMap<>(groups));
         forcedHosts = Collections.unmodifiableMap(new LinkedHashMap<>(forcedHosts));
         permissions = Collections.unmodifiableMap(new LinkedHashMap<>(permissions));
         tryOrder = List.copyOf(tryOrder);

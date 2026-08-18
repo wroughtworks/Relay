@@ -284,6 +284,82 @@ class BackendLossFallbackTest {
         }
     }
 
+    /**
+     * A group survives losing a member: the player lands on a sibling.
+     *
+     * <p>The reason to run several servers under one name is that any of them can go
+     * without the name going with it. That only holds if the try order is resolved to
+     * members and the dead one excluded individually — excluding the whole group, which
+     * is the easy mistake, would send a player who lost {@code survival-01} past
+     * {@code survival-02} entirely and out to whatever came next.
+     */
+    @Test
+    void aGroupFallsBackToItsOtherMember(@TempDir Path dir) throws Exception {
+        Backend first = new Backend("survival-01", LOBBY_MARKER, true);
+        Backend second = new Backend("survival-02", SURVIVAL_MARKER, false);
+
+        CompletableFuture<Void> firstReady = first.serve();
+        CompletableFuture<Void> secondReady = second.serve();
+
+        int port = freePort();
+        Files.writeString(dir.resolve("relay.toml"), """
+                bind = "127.0.0.1:%d"
+                motd = "test"
+                online-mode = false
+                forwarding-mode = "none"
+                compression-threshold = -1
+                balance = "first-available"
+                try = ["survival"]
+
+                [servers]
+                survival-01 = "127.0.0.1:%d"
+                survival-02 = "127.0.0.1:%d"
+
+                [groups]
+                survival = ["survival-01", "survival-02"]
+                """.formatted(port, first.port(), second.port()));
+
+        proxy = new RelayProxy(ConfigLoader.load(dir.resolve("relay.toml")));
+        proxy.start();
+
+        try (Socket socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(20_000);
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+
+            // "try" names only the group, so arriving anywhere at all proves a group is
+            // a destination in its own right.
+            login(out, in, port);
+            firstReady.get(15, TimeUnit.SECONDS);
+
+            ByteBuf world = readUntilId(in, LOBBY_MARKER);
+            assertNotNull(world, "a group named in the try order should have taken the player");
+            world.release();
+
+            ByteBuf startConfiguration = readUntilId(in, CB_PLAY_START_CONFIGURATION);
+            assertNotNull(startConfiguration, "losing one member should have moved the player, not dropped them");
+            startConfiguration.release();
+
+            writeFrame(out, Unpooled.buffer().writeByte(SB_PLAY_CONFIG_ACK));
+            out.flush();
+
+            ByteBuf registry = readUntilId(in, CB_CONFIG_REGISTRY);
+            assertNotNull(registry, "the sibling never configured the player");
+            registry.release();
+
+            ByteBuf finish = readUntilId(in, CB_CONFIG_FINISH);
+            assertNotNull(finish, "the sibling never finished configuring the player");
+            finish.release();
+
+            writeFrame(out, Unpooled.buffer().writeByte(SB_CONFIG_FINISH_ACK));
+            out.flush();
+
+            secondReady.get(15, TimeUnit.SECONDS);
+            assertEquals(1, second.playersSeen(),
+                    "the other member of the group should have taken the player over");
+        }
+    }
+
     private static void writeConfig(Path dir, int port, int lobbyPort, int survivalPort, String tryOrder)
             throws IOException {
         Files.writeString(dir.resolve("relay.toml"), """

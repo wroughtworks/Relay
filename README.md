@@ -34,10 +34,12 @@ commands that reach the proxy by plugin message. See
 - **Forwarding**: modern (Velocity-compatible, HMAC signed), legacy (BungeeCord), none
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
+- **Groups**: several interchangeable backends under one name, balanced by fewest
+  players, round robin, random, or priority order
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
-- **Commands**: `/server`, `/glist`, `/find`, `/send`, with permission nodes
+- **Commands**: `/server`, `/glist`, `/find`, `/send`, group-aware, with permission nodes
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
 - **Client API**: a plugin-message protocol for client-side mods —
@@ -151,6 +153,43 @@ The shaded jar lands in `proxy/build/libs/proxy-<version>.jar`:
 ```bash
 java -jar proxy/build/libs/proxy-0.1.0-SNAPSHOT.jar --config relay.toml
 ```
+
+## Server groups
+
+Several interchangeable backends can share one name:
+
+```toml
+balance = "least-players"
+try = ["lobby", "survival"]
+
+[servers]
+lobby = "127.0.0.1:25566"
+survival-01 = "127.0.0.1:25567"
+survival-02 = "127.0.0.1:25568"
+
+[groups]
+survival = ["survival-01", "survival-02"]
+```
+
+Players type `/server survival` and land on whichever member is the better host right
+now. Naming a member directly still works — that is how someone rejoins the server their
+base is on. A group can be used anywhere a backend can: `try`, forced hosts, `/send`, and
+both plugin-message APIs.
+
+Balancing and failover are deliberately one mechanism rather than two. A group never
+answers with a single server; it answers with all of its members, best first. So the
+preferred member is tried, and anything that refuses or is unreachable falls through to
+the next — and a member that dies under a player hands them to a sibling rather than to
+whatever came next in the try list.
+
+| `balance` | |
+|---|---|
+| `least-players` | fewest players first. Fills an empty server before a busy one, and self-corrects as people come and go. The default |
+| `round-robin` | each join takes the next member in turn. Better when players arrive in waves and counts lag the truth |
+| `random` | cheap, stateless, even enough over any real number of joins |
+| `first-available` | configured order, always. Not balancing: later members exist only to catch failures of earlier ones |
+
+Ties keep configured order in every strategy, so an empty network still fills predictably.
 
 ## Configuring backends
 

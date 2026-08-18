@@ -30,8 +30,10 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.security.KeyPair;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -46,6 +48,7 @@ public final class RelayProxy {
 
     private final RelayConfig config;
     private final Map<String, RegisteredServer> servers = new LinkedHashMap<>();
+    private final Map<String, ServerGroup> groups = new LinkedHashMap<>();
     private final PlayerRegistry players = new PlayerRegistry();
     private final SessionAuthenticator authenticator = new SessionAuthenticator();
     private final CommandManager commands;
@@ -67,6 +70,13 @@ public final class RelayProxy {
         for (ServerEntry entry : config.servers().values()) {
             servers.put(entry.name().toLowerCase(Locale.ROOT), new RegisteredServer(entry));
         }
+        config.groups().forEach((name, members) -> {
+            List<RegisteredServer> resolved = new ArrayList<>(members.size());
+            for (String member : members) {
+                resolved.add(servers.get(member.toLowerCase(Locale.ROOT)));
+            }
+            groups.put(name.toLowerCase(Locale.ROOT), new ServerGroup(name, resolved));
+        });
         this.commands = new CommandManager(this);
         applyProtocolOverrides();
     }
@@ -116,6 +126,69 @@ public final class RelayProxy {
         return servers.values();
     }
 
+    public Optional<ServerGroup> group(String name) {
+        return Optional.ofNullable(groups.get(name.toLowerCase(Locale.ROOT)));
+    }
+
+    public Collection<ServerGroup> groups() {
+        return groups.values();
+    }
+
+    /**
+     * Turns a destination a player asked for into the backends to try, best first.
+     *
+     * <p>One name may mean one backend or several. Returning a list rather than a single
+     * choice is what lets a group be balanced and failed over by the same code: the
+     * preferred member leads, and anything that refuses simply falls through to the next.
+     *
+     * @return the candidates in the order they should be tried, or empty if the name is
+     *         neither a backend nor a group
+     */
+    public List<RegisteredServer> resolve(String name) {
+        RegisteredServer server = servers.get(name.toLowerCase(Locale.ROOT));
+        if (server != null) {
+            return List.of(server);
+        }
+        ServerGroup group = groups.get(name.toLowerCase(Locale.ROOT));
+        return group == null ? List.of() : group.ordered(config.balance());
+    }
+
+    /**
+     * Resolves a whole try order, flattened and de-duplicated.
+     *
+     * <p>De-duplication matters once groups exist: a fallback list of
+     * {@code ["survival", "lobby"]} where lobby is also in the survival group would
+     * otherwise attempt the same backend twice, and report its failure twice.
+     */
+    public List<RegisteredServer> resolveAll(List<String> names) {
+        List<RegisteredServer> candidates = new ArrayList<>();
+        for (String name : names) {
+            List<RegisteredServer> resolved = resolve(name);
+            if (resolved.isEmpty()) {
+                LOG.warn("'{}' is neither a backend nor a group; skipping it", name);
+                continue;
+            }
+            for (RegisteredServer candidate : resolved) {
+                if (!candidates.contains(candidate)) {
+                    candidates.add(candidate);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    /**
+     * The single backend a destination names right now.
+     *
+     * <p>For callers that move one player and report one outcome &mdash; {@code /server},
+     * {@code /send}, the plugin-message APIs. They get the balanced choice without having
+     * to understand groups.
+     */
+    public Optional<RegisteredServer> select(String name) {
+        List<RegisteredServer> resolved = resolve(name);
+        return resolved.isEmpty() ? Optional.empty() : Optional.of(resolved.get(0));
+    }
+
     // ------------------------------------------------------------ lifecycle
 
     public void start() throws InterruptedException {
@@ -161,6 +234,12 @@ public final class RelayProxy {
                         : "");
         LOG.info("PROXY      send={} receive={}", config.proxyProtocolSend(), config.proxyProtocolReceive());
         LOG.info("Backends   {}", String.join(", ", servers.keySet()));
+        if (!groups.isEmpty()) {
+            for (ServerGroup group : groups.values()) {
+                LOG.info("Group      {}", group);
+            }
+            LOG.info("Balancing  {}", config.balance().configName());
+        }
 
         if (config.proxyProtocolSend()) {
             LOG.info("Sending PROXY protocol headers to backends. Each backend must accept them "

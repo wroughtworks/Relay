@@ -4,6 +4,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -29,6 +30,7 @@ final class BackendApiProbe implements PluginMessageListener {
     private final RelayApi api;
     private final Set<String> outstanding = Collections.synchronizedSet(new LinkedHashSet<>());
     private final List<String> servers = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<String> groups = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     BackendApiProbe(RelayPlugin plugin) {
         this.plugin = plugin;
@@ -42,16 +44,23 @@ final class BackendApiProbe implements PluginMessageListener {
         }
     }
 
-    /** The backends the proxy last reported, for tab completion. */
+    /**
+     * What the proxy last reported as somewhere a player can be sent.
+     *
+     * <p>Groups and backends together, because both are typed the same way and a
+     * completion list that offered only one of them would hide half the network.
+     */
     List<String> knownServers() {
-        return List.copyOf(servers);
+        List<String> destinations = new ArrayList<>(groups);
+        destinations.addAll(servers);
+        return destinations;
     }
 
     /** Sends every read-only request, then reports which ones were answered. */
     void probe(Player carrier) {
         outstanding.clear();
         Collections.addAll(outstanding,
-                "GetServer", "GetServers", "PlayerCount", "PlayerList", "IP", "UUID");
+                "GetServer", "GetServers", "GetGroups", "PlayerCount", "PlayerList", "IP", "UUID");
 
         plugin.report("--- backend API probe, as " + carrier.getName() + " ---");
         // Bukkit only transmits on channels the connection has registered, and silently
@@ -61,6 +70,7 @@ final class BackendApiProbe implements PluginMessageListener {
                 + carrier.getListeningPluginChannels());
         api.requestServerName(carrier);
         api.requestServers(carrier);
+        api.requestGroups(carrier);
         api.requestPlayerCount(carrier, "ALL");
         api.requestPlayerList(carrier, "ALL");
         api.requestAddress(carrier);
@@ -113,6 +123,16 @@ final class BackendApiProbe implements PluginMessageListener {
                         }
                     }
                     plugin.report("  GetServers  -> " + names);
+                }
+                case "GetGroups" -> {
+                    String names = in.readUTF();
+                    groups.clear();
+                    for (String name : names.split(",")) {
+                        if (!name.isBlank()) {
+                            groups.add(name.trim());
+                        }
+                    }
+                    plugin.report("  GetGroups   -> " + (names.isBlank() ? "(none configured)" : names));
                 }
                 case "PlayerCount" -> {
                     String scope = in.readUTF();

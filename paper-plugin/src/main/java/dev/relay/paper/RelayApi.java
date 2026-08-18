@@ -88,6 +88,17 @@ public final class RelayApi {
     }
 
     /**
+     * Asks for every group name.
+     *
+     * <p>Relay's own request. A group is what a player normally types, so anything
+     * offering destinations wants these alongside the backends from
+     * {@link #requestServers}.
+     */
+    public void requestGroups(Player carrier) {
+        send(carrier, out -> out.writeUTF("GetGroups"));
+    }
+
+    /**
      * Asks how many players are on a backend.
      *
      * @param server a backend name, or {@code ALL} for the whole network

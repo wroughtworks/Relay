@@ -56,12 +56,18 @@ Every message starts with a sub-channel name as a UTF string.
 
 ## Sub-channels
 
+Anywhere a server name is accepted, a group name works too, and Relay resolves it the
+same way `/server` does. Existing BungeeCord plugins therefore reach groups without a
+line of change: the operator writes a group name wherever they used to write a server
+name. `GetServers` deliberately keeps its BungeeCord meaning — the concrete backends —
+and `GetGroups` is asked separately.
+
 ### Requests that act
 
 | Sub-channel | Fields | Effect |
 |---|---|---|
-| `Connect` | server | Moves the sending player |
-| `ConnectOther` | player, server | Moves a named player |
+| `Connect` | server \| group | Moves the sending player |
+| `ConnectOther` | player, server \| group | Moves a named player |
 | `Message` / `MessageRaw` | player \| `ALL`, json | Sends chat |
 | `KickPlayer` | player, reason json | Disconnects a player |
 
@@ -73,8 +79,9 @@ The reply arrives asynchronously on the same channel, beginning with the sub-cha
 |---|---|---|
 | `GetServer` | — | server name |
 | `GetServers` | — | comma-separated names |
-| `PlayerCount` | server \| `ALL` | server, count *(int)* |
-| `PlayerList` | server \| `ALL` | server, comma-separated names |
+| `GetGroups` | — | comma-separated group names *(Relay only)* |
+| `PlayerCount` | server \| group \| `ALL` | server, count *(int)* |
+| `PlayerList` | server \| group \| `ALL` | server, comma-separated names |
 | `IP` | — | address, port *(int)* |
 | `UUID` | — | undashed uuid |
 | `UUIDOther` | player | player, undashed uuid |
@@ -83,7 +90,7 @@ The reply arrives asynchronously on the same channel, beginning with the sub-cha
 
 | Sub-channel | Fields |
 |---|---|
-| `Forward` | server \| `ALL`, subchannel, length *(short)*, payload |
+| `Forward` | server \| group \| `ALL`, subchannel, length *(short)*, payload |
 | `ForwardToPlayer` | player, subchannel, length *(short)*, payload |
 
 The receiving server gets a plugin message on the same channel whose first field is your
@@ -124,9 +131,12 @@ relay.forward(player, "ALL", "MyPluginChannel", payload);
 ## Implementation note
 
 Relay recognises these messages by **peeking at raw frames**, not by registering a packet
-decoder. Clientbound play packets are otherwise never parsed, and registering one would
-mean a wrong packet id makes Relay misread ordinary backend traffic and kill the
-connection — the exact failure mode that cost days of debugging once already. Peeking
-degrades instead: anything that does not parse cleanly as a plugin message on an API
-channel is forwarded untouched, so the worst case is that this feature quietly does
-nothing rather than breaking a session.
+decoder. Registering one would mean a wrong packet id makes Relay misread ordinary backend
+traffic and kill the connection — the exact failure mode that cost days of debugging once
+already. Peeking degrades instead: anything that does not parse cleanly as a plugin message
+on an API channel is forwarded untouched, so the worst case is that this feature quietly
+does nothing rather than breaking a session.
+
+The same rule applies to the one other thing Relay reads in this direction, a backend's
+own kick — see `BackendKickHandler`. Everything else travelling backend → client is
+forwarded as an opaque frame and never parsed at all.

@@ -80,6 +80,15 @@ public final class BackendApi {
         public static final String FORWARD_TO_PLAYER = "ForwardToPlayer";
 
         /**
+         * Ask for every configured group name.
+         *
+         * <p>Relay's own. BungeeCord has no groups, so {@link #GET_SERVERS} keeps its
+         * meaning exactly -- the concrete backends -- and this is asked separately by
+         * anything that wants the names players actually type.
+         */
+        public static final String GET_GROUPS = "GetGroups";
+
+        /**
          * Run a proxy command as the sending player.
          *
          * <p>Relay's own, and the reason there is no sub-channel per command: a backend
