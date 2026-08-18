@@ -27,5 +27,5 @@ tasks.processResources {
 }
 
 tasks.jar {
-    archiveBaseName = "RelayDebug"
+    archiveBaseName = "Relay"
 }

@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
@@ -24,11 +24,11 @@ final class BackendApiProbe implements PluginMessageListener {
     /** How long to wait before deciding a request went unanswered. */
     private static final long REPLY_TIMEOUT_TICKS = 60L;
 
-    private final RelayDebugPlugin plugin;
+    private final RelayPlugin plugin;
     private final RelayApi api;
     private final Set<String> outstanding = Collections.synchronizedSet(new LinkedHashSet<>());
 
-    BackendApiProbe(RelayDebugPlugin plugin) {
+    BackendApiProbe(RelayPlugin plugin) {
         this.plugin = plugin;
         this.api = new RelayApi(plugin);
     }

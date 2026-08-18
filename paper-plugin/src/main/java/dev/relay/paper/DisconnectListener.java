@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -18,12 +18,12 @@ import org.bukkit.event.player.PlayerQuitEvent;
  */
 final class DisconnectListener implements Listener {
 
-    private final RelayDebugPlugin plugin;
+    private final RelayPlugin plugin;
     private final ConnectionInspector inspector;
     private final BackendApiProbe probe;
     private final boolean probeOnJoin;
 
-    DisconnectListener(RelayDebugPlugin plugin, ConnectionInspector inspector,
+    DisconnectListener(RelayPlugin plugin, ConnectionInspector inspector,
                        BackendApiProbe probe, boolean probeOnJoin) {
         this.plugin = plugin;
         this.inspector = inspector;

@@ -104,8 +104,8 @@ getServer().getMessenger().registerOutgoingPluginChannel(this, "bungeecord:main"
 getServer().getMessenger().registerIncomingPluginChannel(this, "bungeecord:main", listener);
 ```
 
-`RelayApi` in the `paper-plugin` module wraps the common operations if you would rather not
-hand-roll the streams:
+`RelayApi`, shipped in the Relay plugin, wraps the common operations if you would rather
+not hand-roll the streams:
 
 ```java
 RelayApi relay = new RelayApi(this);

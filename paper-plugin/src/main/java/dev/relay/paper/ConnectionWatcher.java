@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -18,7 +18,7 @@ import java.io.StringWriter;
  */
 final class ConnectionWatcher extends ChannelDuplexHandler {
 
-    private final RelayDebugPlugin plugin;
+    private final RelayPlugin plugin;
     private final String player;
     private final boolean logPackets;
 
@@ -26,7 +26,7 @@ final class ConnectionWatcher extends ChannelDuplexHandler {
     private long packetsIn;
     private long packetsOut;
 
-    ConnectionWatcher(RelayDebugPlugin plugin, String player, boolean logPackets) {
+    ConnectionWatcher(RelayPlugin plugin, String player, boolean logPackets) {
         this.plugin = plugin;
         this.player = player;
         this.logPackets = logPackets;

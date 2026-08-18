@@ -1,13 +1,19 @@
-name: RelayDebug
+name: Relay
 version: '${version}'
-main: dev.relay.debug.RelayDebugPlugin
+main: dev.relay.paper.RelayPlugin
 api-version: '1.20'
 author: Relay
-description: Reports why player connections close, including the ones Paper closes silently.
+description: The backend-side companion to the Relay proxy.
 load: POSTWORLD
 
 commands:
-  relaytest:
-    description: Drive the proxy's backend API by hand.
-    usage: /relaytest [probe|connect <server>|forward <text>]
-    permission: relaydebug.test
+  relay:
+    description: Talk to the proxy over the backend API.
+    usage: /relay [probe|connect <server>|forward <text>]
+    permission: relay.admin
+    aliases: [relayproxy]
+
+permissions:
+  relay.admin:
+    description: Use /relay.
+    default: op

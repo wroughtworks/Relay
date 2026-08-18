@@ -1,8 +1,9 @@
-# RelayDebug
+# Relay --- the backend-side companion to the Relay proxy.
 #
-# Reports why player connections close. Paper logs pipeline faults at DEBUG and
-# says nothing at all when a channel is closed before its exception handler runs,
-# which is why a connection can disappear with no recorded reason.
+# Exposes the proxy's backend API to this server, and reports why player
+# connections close. Paper logs pipeline faults at DEBUG and says nothing at all
+# when a channel is closed before its exception handler runs, which is why a
+# connection can otherwise disappear with no recorded reason.
 
 # Log every packet in and out, by class name.
 #

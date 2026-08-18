@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -10,18 +10,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * {@code /relaytest} — drives the backend API by hand.
+ * {@code /relay} — drives the backend API by hand.
  *
  * <p>The read-only requests run automatically on join. This exists for the ones that
  * change something, which should never fire on their own: moving a player, and sending a
  * cross-server payload.
  */
-final class RelayTestCommand implements CommandExecutor, TabCompleter {
+final class RelayCommand implements CommandExecutor, TabCompleter {
 
-    private final RelayDebugPlugin plugin;
+    private final RelayPlugin plugin;
     private final BackendApiProbe probe;
 
-    RelayTestCommand(RelayDebugPlugin plugin, BackendApiProbe probe) {
+    RelayCommand(RelayPlugin plugin, BackendApiProbe probe) {
         this.plugin = plugin;
         this.probe = probe;
     }

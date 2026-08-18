@@ -226,12 +226,17 @@ relay/
 └── relay.py        development helper
 ```
 
-### RelayDebug
+### The Relay plugin
 
-Paper reports a connection that vanishes as "lost connection: Disconnected" and logs the
-real cause at DEBUG, where it is invisible — and when the pipeline closes a channel before
-its exception handler runs, nothing is logged at all. RelayDebug closes that gap by
-installing a handler on each player's Netty pipeline. It reports:
+The backend-side half. It exposes the proxy's
+[backend API](docs/backend-api.md) to a server's plugins — moving players, querying the
+network, passing messages between servers — and probes that API on join so a
+misconfiguration shows up immediately rather than the first time a plugin needs it.
+
+It also diagnoses connection closes. Paper reports a connection that vanishes as "lost
+connection: Disconnected" and logs the real cause at DEBUG, where it is invisible — and
+when the pipeline closes a channel before its exception handler runs, nothing is logged
+at all. A handler on each player's Netty pipeline closes that gap, reporting:
 
 - whether the **server** or the **client** closed the connection
 - a **stack trace of the code that closed it**, which is the part Paper never prints
@@ -242,8 +247,10 @@ installing a handler on each player's Netty pipeline. It reports:
 py relay.py plugin lobby    # builds it and drops it in that server's plugins folder
 ```
 
-Then restart the backend and reproduce. `log-packets: true` in its config adds per-packet
-tracing, which is worth turning on only for a short targeted session.
+Then restart the backend. `/relay probe` re-runs the API checks by hand, `/relay connect
+<server>` moves you through the proxy, and `/relay forward <text>` exercises cross-server
+messaging. `log-packets: true` in its config adds per-packet tracing, which is worth
+turning on only for a short targeted session.
 
 The plugin finds the channel by searching the player object for a field of type
 `io.netty.channel.Channel` rather than following a named path — field names are remapped

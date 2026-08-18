@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -6,18 +6,20 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.logging.Level;
 
 /**
- * A backend-side companion for diagnosing connections that die without explanation.
+ * The backend-side half of Relay.
  *
- * <p>Paper reports a channel that simply vanishes as "lost connection: Disconnected" and
- * logs the underlying cause at DEBUG, where it is invisible by default. Worse, when the
- * pipeline closes a channel before the exception handler runs, nothing is logged at all.
- * That is the gap this plugin fills: it installs a handler on each player's Netty
- * pipeline that records who closed the connection, with the stack trace of the call.
+ * <p>Two jobs. It exposes the proxy's {@link RelayApi backend API} to this server, so
+ * plugins can move players, query the network and pass messages between servers. And it
+ * reports why connections close: Paper describes a channel that simply vanishes as "lost
+ * connection: Disconnected", logs the cause at DEBUG where it is invisible, and logs
+ * nothing at all when the pipeline closes a channel before its exception handler runs.
+ * A handler on each player's Netty pipeline records who closed the connection, with the
+ * stack trace of the call.
  *
- * <p>Purely diagnostic --- it observes and reports, and changes nothing about how the
- * server handles a connection.
+ * <p>The diagnostic half only observes; it changes nothing about how the server handles
+ * a connection.
  */
-public final class RelayDebugPlugin extends JavaPlugin {
+public final class RelayPlugin extends JavaPlugin {
 
     private ConnectionInspector inspector;
     private BackendApiProbe probe;
@@ -33,7 +35,7 @@ public final class RelayDebugPlugin extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(
                 new DisconnectListener(this, inspector, probe, getConfig().getBoolean("probe-on-join", true)), this);
-        getCommand("relaytest").setExecutor(new RelayTestCommand(this, probe));
+        getCommand("relay").setExecutor(new RelayCommand(this, probe));
 
         getLogger().info("Watching player connections for unexplained closes.");
         if (logPackets) {

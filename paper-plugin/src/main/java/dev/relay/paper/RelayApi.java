@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;

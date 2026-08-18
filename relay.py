@@ -36,7 +36,7 @@ PROJECT = Path(__file__).resolve().parent
 JAR_GLOB = "proxy-*.jar"
 JAR_DIR = PROJECT / "proxy" / "build" / "libs"
 PLUGIN_JAR_DIR = PROJECT / "paper-plugin" / "build" / "libs"
-PLUGIN_JAR_GLOB = "RelayDebug-*.jar"
+PLUGIN_JAR_GLOB = "Relay-*.jar"
 CONFIG = PROJECT / "relay.toml"
 DEV_CONFIG = PROJECT / "relay-dev.json"
 SOURCE_DIRS = [
@@ -1160,22 +1160,40 @@ def cmd_plugin(args) -> int:
         return 1
 
     entries = backends()
+    code = 0
     for name in names:
+        # Windows will not let a loaded jar be replaced or deleted, so a running
+        # server turns this into a confusing permission error partway through.
+        if backend_pid(name):
+            print(Style.yellow(f"'{name}' is running; its plugin jar cannot be replaced."))
+            print(Style.dim(f"  stop it first:  py relay.py shutdown {name}"))
+            code = 1
+            continue
+
         plugins = Path(entries[name]["path"]) / "plugins"
         plugins.mkdir(exist_ok=True)
         # Clear older copies, or the server loads two versions and refuses one.
-        for stale in plugins.glob("RelayDebug-*.jar"):
-            if stale.name != jar.name:
-                stale.unlink()
+        # RelayDebug is the name this plugin shipped under before it grew past being
+        # a diagnostic; leaving one behind would load the plugin twice.
+        for pattern in ("Relay-*.jar", "RelayDebug-*.jar"):
+            for stale in plugins.glob(pattern):
+                if stale.name == jar.name:
+                    continue
+                try:
+                    stale.unlink()
+                    print(Style.dim(f"  removed stale {stale.name}"))
+                except OSError as error:
+                    print(Style.yellow(f"  could not remove {stale.name}: {error}"))
+                    print(Style.dim("  two copies would load the plugin twice; remove it by hand"))
+                    code = 1
         shutil.copy2(jar, plugins / jar.name)
         print(Style.green(f"Installed {jar.name} into {plugins}"))
 
-    print()
-    print("Restart the backend(s), then reproduce the problem. The plugin reports:")
-    print("  - whether the SERVER or the CLIENT closed the connection")
-    print("  - a stack trace naming the code that closed it")
-    print("  - kick reasons, and writes that failed")
-    return 0
+    if code == 0:
+        print()
+        print("Restart the backend(s) to load it. On join the plugin probes the")
+        print("backend API and prints what came back; /relay drives it by hand.")
+    return code
 
 
 def cmd_unlink(args) -> int:
@@ -1419,7 +1437,7 @@ def main() -> int:
 
 other:
   py relay.py start lobby --debug   one backend, with Paper's packet logging
-  py relay.py plugin lobby          install the backend-side debug plugin
+  py relay.py plugin lobby          install the backend-side plugin
   py relay.py run                   just the proxy, rebuilding if stale
   py relay.py ping                  prove the proxy answers a server-list ping
   py relay.py logs -f               follow the proxy log
@@ -1485,7 +1503,7 @@ other:
     build.add_argument("--skip-tests", action="store_true")
     build.set_defaults(func=cmd_build)
 
-    plugin = sub.add_parser("plugin", help="build and install the Paper debug plugin")
+    plugin = sub.add_parser("plugin", help="build and install the Paper-side plugin")
     plugin.add_argument("name", nargs="?", help="backend name, or 'all'")
     plugin.set_defaults(func=cmd_plugin)
 
