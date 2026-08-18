@@ -36,6 +36,9 @@ commands that reach the proxy by plugin message. See
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
 - **Groups**: `survival-01` and `survival-02` are a group called `survival` with no
   config at all, balanced by fewest players, round robin, random, or priority order
+- **Health checks**: every backend status-pinged on an interval, so a dead one leaves
+  routing before a player is sent to it — with hysteresis, so one dropped packet does not
+  empty a server
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
@@ -218,13 +221,14 @@ dashboard that needs a CDN to render fails exactly when someone is diagnosing an
 | | |
 |---|---|
 | `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
-| `GET /api/servers` | each backend, its address, player count, and group |
+| `GET /api/servers` | each backend: address, group, health, latency, version, and its own player count |
 | `GET /api/groups` | each group, its members, and its total |
 | `GET /api/players` | who is online and which backend they are on |
 | `WS /api/events` | one socket carrying every event type |
 
 Events arrive as `{type, player, from, to}`, with `type` one of `PLAYER_CONNECTED`,
-`PLAYER_DISCONNECTED`, `PLAYER_SWITCHED_SERVER`. One socket multiplexes them all, per
+`PLAYER_DISCONNECTED`, `PLAYER_SWITCHED_SERVER`, `SERVER_HEALTH_CHANGED`. One socket
+multiplexes them all, per
 spec §9.4 — a socket per type would multiply connections by the number of things worth
 watching.
 

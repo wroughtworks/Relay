@@ -177,6 +177,7 @@ class PlayRelayTest {
                 motd = "test"
                 online-mode = false
                 forwarding-mode = "none"
+                health.enabled = false
                 compression-threshold = -1
 
                 [servers]

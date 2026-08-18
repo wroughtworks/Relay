@@ -199,6 +199,28 @@ proxy-protocol-receive = false
 balance = "least-players"
 
 
+# ------------------------------------------------------------------- health
+#
+# Relay pings each backend on an interval -- the same server-list ping a client
+# makes -- so it knows a server is down before a player does. Without it, a dead
+# backend is discovered by sending someone to it: they wait out the connect
+# timeout, get an error, and the next player repeats the whole thing.
+#
+# A backend that fails checks is moved to the back of its group rather than
+# removed, so a network whose health checking is itself broken degrades to
+# trying anyway instead of refusing every join.
+#
+# failures-before-down is hysteresis: one dropped packet or one long GC pause
+# will fail a single check against a perfectly healthy server, and reacting to
+# that would empty it. Recovery is immediate in the other direction.
+
+[health]
+enabled = true
+interval = 10000
+timeout = 3000
+failures-before-down = 3
+
+
 # ---------------------------------------------------------------- dashboard
 #
 # A read-only HTTP API and a WebSocket carrying live events, for the web

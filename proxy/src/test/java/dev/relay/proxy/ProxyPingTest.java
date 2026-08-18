@@ -166,6 +166,7 @@ class ProxyPingTest {
                 max-players = 64
                 online-mode = false
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:1"

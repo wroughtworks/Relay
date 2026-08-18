@@ -1,5 +1,6 @@
 package dev.relay.proxy;
 
+import dev.relay.health.BackendHealth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +31,8 @@ public final class ProxyEvents {
     public enum Kind {
         PLAYER_CONNECTED,
         PLAYER_DISCONNECTED,
-        PLAYER_SWITCHED_SERVER
+        PLAYER_SWITCHED_SERVER,
+        SERVER_HEALTH_CHANGED
     }
 
     /**
@@ -40,9 +42,16 @@ public final class ProxyEvents {
     public record PlayerEvent(Kind kind, ConnectedPlayer player, RegisteredServer from, RegisteredServer to) {
     }
 
-    @FunctionalInterface
+    /** A backend crossing between usable and not, which is the version worth telling. */
+    public record ServerEvent(Kind kind, RegisteredServer server, BackendHealth before, BackendHealth after) {
+    }
+
     public interface Listener {
         void onPlayerEvent(PlayerEvent event);
+
+        /** Default because most listeners care about players and nothing else. */
+        default void onServerEvent(ServerEvent event) {
+        }
     }
 
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
@@ -65,6 +74,17 @@ public final class ProxyEvents {
 
     public void playerSwitchedServer(ConnectedPlayer player, RegisteredServer from, RegisteredServer to) {
         fire(new PlayerEvent(Kind.PLAYER_SWITCHED_SERVER, player, from, to));
+    }
+
+    public void serverHealthChanged(RegisteredServer server, BackendHealth before, BackendHealth after) {
+        ServerEvent event = new ServerEvent(Kind.SERVER_HEALTH_CHANGED, server, before, after);
+        for (Listener listener : listeners) {
+            try {
+                listener.onServerEvent(event);
+            } catch (RuntimeException e) {
+                LOG.warn("A {} listener threw; health checking continues", event.kind(), e);
+            }
+        }
     }
 
     /**

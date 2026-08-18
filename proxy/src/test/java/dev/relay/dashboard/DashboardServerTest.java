@@ -173,6 +173,7 @@ class DashboardServerTest {
         Files.writeString(dir.resolve("relay.toml"), """
                 bind = "127.0.0.1:%d"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -190,6 +191,7 @@ class DashboardServerTest {
         Files.writeString(dir.resolve("relay.toml"), """
                 bind = "127.0.0.1:%d"
                 forwarding-mode = "none"
+                health.enabled = false
                 balance = "least-players"
 
                 [dashboard]

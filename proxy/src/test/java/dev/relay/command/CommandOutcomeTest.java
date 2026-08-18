@@ -81,6 +81,7 @@ class CommandOutcomeTest {
         Files.writeString(path, """
                 bind = "127.0.0.1:25599"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"

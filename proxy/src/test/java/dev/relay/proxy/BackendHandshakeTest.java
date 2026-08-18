@@ -225,6 +225,7 @@ class BackendHandshakeTest {
                 motd = "test"
                 online-mode = false
                 forwarding-mode = "%s"
+                health.enabled = false
                 compression-threshold = -1
                 proxy-protocol-send = %s
 

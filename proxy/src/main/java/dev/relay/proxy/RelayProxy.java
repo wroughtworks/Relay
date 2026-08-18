@@ -12,6 +12,7 @@ import dev.relay.net.Encryption;
 import dev.relay.net.MinecraftConnection;
 import dev.relay.net.Transport;
 import dev.relay.forwarding.ModernForwarding;
+import dev.relay.health.HealthChecker;
 import dev.relay.protocol.PacketDirection;
 import dev.relay.protocol.ProtocolState;
 import dev.relay.protocol.ProtocolVersion;
@@ -53,6 +54,7 @@ public final class RelayProxy {
     private final PlayerRegistry players = new PlayerRegistry();
     private final ProxyEvents events = new ProxyEvents();
     private DashboardServer dashboard;
+    private HealthChecker healthChecker;
     private final SessionAuthenticator authenticator = new SessionAuthenticator();
     private final CommandManager commands;
     private final KeyPair keyPair;
@@ -248,6 +250,11 @@ public final class RelayProxy {
             LOG.info("Balancing  {}", config.balance().configName());
         }
 
+        if (config.healthEnabled()) {
+            healthChecker = new HealthChecker(this);
+            healthChecker.start();
+        }
+
         // Last, so a dashboard failure cannot stop the listener that matters from
         // already being open.
         if (config.dashboardEnabled()) {
@@ -272,6 +279,9 @@ public final class RelayProxy {
         LOG.info("Shutting down");
         if (dashboard != null) {
             dashboard.stop();
+        }
+        if (healthChecker != null) {
+            healthChecker.stop();
         }
         for (ConnectedPlayer player : players.snapshot()) {
             player.disconnect(Component.text("Proxy is restarting"));

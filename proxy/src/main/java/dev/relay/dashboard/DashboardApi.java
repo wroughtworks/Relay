@@ -1,5 +1,6 @@
 package dev.relay.dashboard;
 
+import dev.relay.health.BackendHealth;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
@@ -37,13 +38,28 @@ public final class DashboardApi {
 
     /** Enough for a landing page, in one request rather than three. */
     public record Overview(String version, long uptimeSeconds, int players, int maxPlayers,
-                           int servers, int groups, String balance, String bind) {
+                           int servers, int serversUp, int groups, String balance, String bind) {
     }
 
-    public record ServerView(String name, String address, int players, String group) {
+    /**
+     * @param status         Relay's health verdict for this backend
+     * @param latencyMillis  last successful status ping, or -1
+     * @param reportedPlayers what the backend says is online. A number above
+     *                        {@code players} means people are reaching it without passing
+     *                        through this proxy, which is worth seeing side by side
+     * @param detail         why, when the status is not healthy
+     */
+    public record ServerView(String name, String address, int players, String group,
+                             String status, long latencyMillis, int reportedPlayers,
+                             String version, String detail) {
     }
 
-    public record GroupView(String name, List<String> members, int players) {
+    /**
+     * @param healthy how many members are taking new players, which is the number that
+     *                decides whether a group is one bad night from having nowhere to send
+     *                anyone
+     */
+    public record GroupView(String name, List<String> members, int players, int healthy) {
     }
 
     /**
@@ -62,6 +78,7 @@ public final class DashboardApi {
                 proxy.players().count(),
                 proxy.config().maxPlayers(),
                 proxy.servers().size(),
+                (int) proxy.servers().stream().filter(RegisteredServer::acceptsNewPlayers).count(),
                 proxy.groups().size(),
                 proxy.config().balance().configName(),
                 proxy.config().bind().getHostString() + ":" + proxy.config().bind().getPort());
@@ -70,11 +87,17 @@ public final class DashboardApi {
     public List<ServerView> servers() {
         List<ServerView> views = new ArrayList<>();
         for (RegisteredServer server : proxy.servers()) {
+            BackendHealth health = server.health();
             views.add(new ServerView(
                     server.name(),
                     server.address().getHostString() + ":" + server.address().getPort(),
                     server.playerCount(),
-                    groupOf(server)));
+                    groupOf(server),
+                    health.state().name(),
+                    health.latencyMillis(),
+                    health.reportedPlayers(),
+                    health.version(),
+                    health.detail()));
         }
         return views;
     }
@@ -84,7 +107,8 @@ public final class DashboardApi {
         for (ServerGroup group : proxy.groups()) {
             views.add(new GroupView(group.name(),
                     group.members().stream().map(RegisteredServer::name).toList(),
-                    group.playerCount()));
+                    group.playerCount(),
+                    (int) group.members().stream().filter(RegisteredServer::acceptsNewPlayers).count()));
         }
         return views;
     }

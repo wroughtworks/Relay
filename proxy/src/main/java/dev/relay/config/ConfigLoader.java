@@ -134,6 +134,21 @@ public final class ConfigLoader {
         // to switch on.
         boolean traceCloses = config.getOrElse("trace-closes", Boolean.TRUE);
 
+        // On by default, unlike the dashboard: this one only makes routing better, and
+        // costs one status ping per backend per interval -- the same request a server
+        // list refresh makes.
+        boolean healthEnabled = config.getOrElse("health.enabled", Boolean.TRUE);
+        int healthInterval = config.getIntOrElse("health.interval", 10000);
+        int healthTimeout = config.getIntOrElse("health.timeout", 3000);
+        int healthFailures = config.getIntOrElse("health.failures-before-down", 3);
+        if (healthInterval < 1000) {
+            throw new IllegalArgumentException("health.interval must be at least 1000ms, got " + healthInterval);
+        }
+        if (healthFailures < 1) {
+            throw new IllegalArgumentException("health.failures-before-down must be at least 1, got "
+                    + healthFailures);
+        }
+
         // Off by default. It serves who is online and where, which is not something to
         // start publishing on an upgrade without the operator asking for it.
         boolean dashboardEnabled = config.getOrElse("dashboard.enabled", Boolean.FALSE);
@@ -165,6 +180,7 @@ public final class ConfigLoader {
                 bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
+                healthEnabled, healthInterval, healthTimeout, healthFailures,
                 dashboardEnabled, dashboardBind,
                 servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }

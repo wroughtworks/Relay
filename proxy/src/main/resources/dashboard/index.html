@@ -49,6 +49,14 @@
   tbody tr { border-top: 1px solid var(--line); }
   td.num { font-variant-numeric: tabular-nums; }
   .empty { color: var(--muted); padding: 14px 16px; font-style: italic; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px;
+          font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+  .HEALTHY  { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .DEGRADED { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .DRAINING { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .UNHEALTHY, .OFFLINE { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+  .UNKNOWN  { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+  td .why { color: var(--muted); font-size: 12px; margin-left: 8px; }
   #feed { font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           max-height: 260px; overflow-y: auto; padding: 10px 16px; }
   #feed div { border-top: 1px solid var(--line); padding: 3px 0; }
@@ -70,14 +78,15 @@
 
   <h2>Backends</h2>
   <div class="scroll"><table>
-    <thead><tr><th>Name</th><th>Address</th><th>Group</th><th>Players</th></tr></thead>
+    <thead><tr><th>Name</th><th>Status</th><th>Address</th><th>Group</th>
+               <th>Players</th><th>Backend says</th><th>Latency</th><th>Version</th></tr></thead>
     <tbody id="servers"></tbody>
   </table></div>
 
   <div id="groupsWrap" hidden>
     <h2>Groups</h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Members</th><th>Players</th></tr></thead>
+      <thead><tr><th>Name</th><th>Members</th><th>Healthy</th><th>Players</th></tr></thead>
       <tbody id="groups"></tbody>
     </table></div>
   </div>
@@ -147,7 +156,7 @@ async function refresh() {
 
     $("tiles").replaceChildren(...[
       ["Players", overview.players + " / " + overview.maxPlayers],
-      ["Backends", overview.servers],
+      ["Backends up", overview.serversUp + " / " + overview.servers],
       ["Groups", overview.groups],
       ["Balancing", overview.balance],
       ["Uptime", duration(overview.uptimeSeconds)],
@@ -164,12 +173,30 @@ async function refresh() {
       return d;
     }));
 
-    fill($("servers"), servers.map(s => row([s.name, s.address, s.group, s.players])),
-         4, "no backends configured");
+    fill($("servers"), servers.map(s => {
+      const tr = row([s.name, "", s.address, s.group, s.players,
+                      s.reportedPlayers < 0 ? null : s.reportedPlayers,
+                      s.latencyMillis < 0 ? null : s.latencyMillis + "ms",
+                      s.version]);
+      // The status cell is built rather than filled, so the state colours it.
+      const cell = tr.children[1];
+      const pill = document.createElement("span");
+      pill.className = "pill " + s.status;
+      pill.textContent = s.status.toLowerCase();
+      cell.replaceChildren(pill);
+      if (s.detail) {
+        const why = document.createElement("span");
+        why.className = "why";
+        why.textContent = s.detail;
+        cell.appendChild(why);
+      }
+      return tr;
+    }), 8, "no backends configured");
 
     $("groupsWrap").hidden = groups.length === 0;
-    fill($("groups"), groups.map(g => row([g.name, g.members.join(", "), g.players])),
-         3, "none");
+    fill($("groups"), groups.map(g =>
+           row([g.name, g.members.join(", "), g.healthy + " / " + g.members.length, g.players])),
+         4, "none");
 
     fill($("players"),
          players.map(p => row([p.username, p.server, p.protocol, duration(p.onlineSeconds)])),
@@ -207,11 +234,14 @@ function connect() {
   };
   ws.onmessage = e => {
     const ev = JSON.parse(e.data);
-    const who = ev.player ? ev.player.username : "someone";
+    const who = ev.player ? ev.player.username : ev.server ?? "someone";
     if (ev.type === "PLAYER_CONNECTED") log("joined on " + ev.to, who);
     else if (ev.type === "PLAYER_DISCONNECTED") log("left" + (ev.from ? " from " + ev.from : ""), who);
     else if (ev.type === "PLAYER_SWITCHED_SERVER") log("moved " + ev.from + " → " + ev.to, who);
-    else log(ev.type, who);
+    else if (ev.type === "SERVER_HEALTH_CHANGED") {
+      log("is " + ev.to.toLowerCase() + (ev.detail ? " — " + ev.detail : "")
+          + " (was " + ev.from.toLowerCase() + ")", ev.server);
+    } else log(ev.type, who);
     refresh();
   };
 }

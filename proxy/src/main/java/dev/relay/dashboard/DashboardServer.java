@@ -57,7 +57,21 @@ public final class DashboardServer {
     /** Live sockets. A set because a browser tab may open several, and reloads leak none. */
     private final Set<WsContext> sockets = ConcurrentHashMap.newKeySet();
 
-    private final ProxyEvents.Listener listener = this::broadcast;
+    private final ProxyEvents.Listener listener = new ProxyEvents.Listener() {
+        @Override
+        public void onPlayerEvent(ProxyEvents.PlayerEvent event) {
+            broadcast(new Event(event.kind().name(), api.view(event.player()),
+                    event.from() == null ? null : event.from().name(),
+                    event.to() == null ? null : event.to().name(), null, null));
+        }
+
+        @Override
+        public void onServerEvent(ProxyEvents.ServerEvent event) {
+            broadcast(new Event(event.kind().name(), null,
+                    event.before().state().name(), event.after().state().name(),
+                    event.server().name(), event.after().detail()));
+        }
+    };
 
     private Javalin server;
 
@@ -134,15 +148,11 @@ public final class DashboardServer {
      * a non-blocking send. A socket that fails is dropped rather than retried, since the
      * player whose session triggered this is not waiting on anyone's browser.
      */
-    private void broadcast(ProxyEvents.PlayerEvent event) {
+    private void broadcast(Event event) {
         if (sockets.isEmpty()) {
             return;
         }
-        String message = gson.toJson(new Event(
-                event.kind().name(),
-                api.view(event.player()),
-                event.from() == null ? null : event.from().name(),
-                event.to() == null ? null : event.to().name()));
+        String message = gson.toJson(event);
         for (WsContext socket : sockets) {
             try {
                 socket.send(message);
@@ -153,8 +163,17 @@ public final class DashboardServer {
         }
     }
 
-    /** One envelope for every event type, so a client opens one socket. */
-    private record Event(String type, DashboardApi.PlayerView player, String from, String to) {
+    /**
+     * One envelope for every event type, so a client opens one socket.
+     *
+     * <p>{@code from} and {@code to} carry a server name for a player moving and a health
+     * state for a backend changing. Two shapes would mean two sockets or a tagged union;
+     * one shape with a {@code type} to read it by is what &sect;9.4 is asking for.
+     *
+     * @param server the backend a server event is about, null for player events
+     */
+    private record Event(String type, DashboardApi.PlayerView player, String from, String to,
+                         String server, String detail) {
     }
 
     public void stop() {

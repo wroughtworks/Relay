@@ -77,6 +77,16 @@ public final class ServerGroup {
                 // Configured order is the answer.
             }
         }
+
+        // Health is applied last, and the sort is stable, so it partitions the strategy's
+        // answer rather than replacing it: usable members keep the order the strategy
+        // chose, and failing ones keep theirs behind them. Doing this first would have
+        // been silently useless, since the strategy sort would sort right over it.
+        //
+        // Demoted rather than removed, per spec 6.4. A network whose health checks are
+        // themselves broken then degrades to the old behaviour of trying anyway, instead
+        // of refusing every join.
+        ordered.sort(Comparator.comparing(server -> !server.acceptsNewPlayers()));
         return ordered;
     }
 

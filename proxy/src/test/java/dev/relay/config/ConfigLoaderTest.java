@@ -71,6 +71,7 @@ class ConfigLoaderTest {
                 max-players = 42
                 online-mode = false
                 forwarding-mode = "legacy"
+                health.enabled = false
                 compression-threshold = 128
                 intercept-commands = false
                 try = ["survival", "lobby"]
@@ -132,6 +133,7 @@ class ConfigLoaderTest {
         Files.writeString(path, "﻿" + """
                 bind = "0.0.0.0:25599"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -148,6 +150,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "modern"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -163,6 +166,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -177,6 +181,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "modern"
+                health.enabled = false
                 forwarding-secret-file = "forwarding.secret"
 
                 [servers]
@@ -191,6 +196,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
                 """);
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ConfigLoader.load(path));
@@ -203,6 +209,7 @@ class ConfigLoaderTest {
         Files.writeString(tryPath, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
                 try = ["nope"]
 
                 [servers]
@@ -217,6 +224,7 @@ class ConfigLoaderTest {
         Files.writeString(hostPath, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -234,6 +242,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
                 balance = "round-robin"
                 try = ["survival"]
 
@@ -277,6 +286,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -309,6 +319,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -339,6 +350,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 pvp-arena = "127.0.0.1:25566"
@@ -373,6 +385,7 @@ class ConfigLoaderTest {
         Files.writeString(shadow, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -389,6 +402,7 @@ class ConfigLoaderTest {
         Files.writeString(missing, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -403,6 +417,7 @@ class ConfigLoaderTest {
         Files.writeString(empty, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -419,6 +434,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
                 compression-level = 12
 
                 [servers]
@@ -433,6 +449,7 @@ class ConfigLoaderTest {
         Files.writeString(path, """
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
+                health.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
