@@ -64,6 +64,42 @@ class BackendApiTest {
         }
     }
 
+    /**
+     * Relay must announce the API channels to the backend before anything else works.
+     *
+     * <p>Bukkit drops a plugin message whose channel the receiving client has not
+     * registered, and Relay is the client from a backend's point of view. Without this
+     * announcement a plugin's requests never leave the server, which looks exactly like
+     * the proxy ignoring them.
+     */
+    @Test
+    void theApiChannelsAreRegisteredWithTheBackend(@TempDir Path dir) throws Exception {
+        join(dir);
+
+        InputStream in = backendConnection.getInputStream();
+        for (int i = 0; i < 50; i++) {
+            ByteBuf frame = readFrame(in);
+            try {
+                if (ProtocolUtils.readVarInt(frame) != SB_PLAY_PLUGIN_MESSAGE) {
+                    continue;
+                }
+                if (!ProtocolUtils.readString(frame, 256).equals("minecraft:register")) {
+                    continue;
+                }
+                String announced = new String(ProtocolUtils.readRemaining(frame),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                assertTrue(announced.contains(BackendApi.BUNGEE_CHANNEL),
+                        "expected the BungeeCord channel, got: " + announced.replace('\0', ' '));
+                return;
+            } catch (RuntimeException ignored) {
+                // Not a plugin message; keep looking.
+            } finally {
+                frame.release();
+            }
+        }
+        org.junit.jupiter.api.Assertions.fail("Relay never registered its channels with the backend");
+    }
+
     @Test
     void getServerNamesTheBackend(@TempDir Path dir) throws Exception {
         DataInputStream reply = exchange(dir, out -> out.writeUTF("GetServer"));

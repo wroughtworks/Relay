@@ -1,6 +1,8 @@
 package dev.relay.session;
 
+import dev.relay.api.backend.BackendApi;
 import dev.relay.api.backend.BackendApiHandler;
+import dev.relay.protocol.packet.PluginMessagePacket;
 import dev.relay.net.SessionHandler;
 import dev.relay.protocol.Packet;
 import dev.relay.proxy.ConnectedPlayer;
@@ -12,6 +14,8 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * Steady-state relay of backend traffic to the player.
  *
@@ -22,6 +26,9 @@ import org.slf4j.LoggerFactory;
 public final class BackendPlaySessionHandler implements SessionHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(BackendPlaySessionHandler.class);
+
+    /** The channel a peer uses to announce which plugin channels it accepts. */
+    private static final String REGISTER_CHANNEL = "minecraft:register";
 
     private final RelayProxy proxy;
     private final ServerConnection server;
@@ -35,6 +42,30 @@ public final class BackendPlaySessionHandler implements SessionHandler {
         this.proxy = proxy;
         this.server = server;
         this.api = proxy.config().backendApiEnabled() ? new BackendApiHandler(proxy, server) : null;
+    }
+
+    /**
+     * Tells the backend which plugin channels this connection accepts.
+     *
+     * <p>Required, not optional. Bukkit's {@code sendPluginMessage} silently drops a
+     * message whose channel the receiving client has not registered, and Relay is the
+     * client as far as a backend is concerned. Without this announcement a plugin can
+     * call the API all it likes and nothing ever leaves the server &mdash; which presents
+     * as the proxy ignoring requests it never actually received.
+     *
+     * <p>The payload is the channel names separated by NUL bytes, which is what
+     * {@code minecraft:register} has always carried.
+     */
+    @Override
+    public void activated() {
+        if (api == null) {
+            return;
+        }
+        String channels = String.join("\0", BackendApi.BUNGEE_CHANNEL, BackendApi.RELAY_CHANNEL);
+        server.connection().write(new PluginMessagePacket(
+                REGISTER_CHANNEL, channels.getBytes(StandardCharsets.UTF_8)));
+        LOG.debug("Registered {} with {} so it will send API messages",
+                channels.replace('\0', ' '), server.target().name());
     }
 
     @Override

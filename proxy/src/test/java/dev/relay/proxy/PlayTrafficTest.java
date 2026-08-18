@@ -198,6 +198,19 @@ class PlayTrafficTest {
         return drain(buf);
     }
 
+    /** True for the {@code minecraft:register} Relay sends when a backend enters play. */
+    private static boolean isChannelRegistration(byte[] packet) {
+        ByteBuf buf = Unpooled.wrappedBuffer(packet);
+        try {
+            return ProtocolUtils.readVarInt(buf) == PLUGIN_MESSAGE
+                    && ProtocolUtils.readString(buf, 256).equals("minecraft:register");
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            buf.release();
+        }
+    }
+
     private static byte[] drain(ByteBuf buf) {
         try {
             byte[] bytes = new byte[buf.readableBytes()];
@@ -269,12 +282,18 @@ class PlayTrafficTest {
                 out.flush();
 
                 List<byte[]> packets = new ArrayList<>();
-                for (int i = 0; i < expectedPackets; i++) {
+                while (packets.size() < expectedPackets) {
                     ByteBuf frame = readCompressedFrame(in);
                     try {
                         byte[] bytes = new byte[frame.readableBytes()];
                         frame.readBytes(bytes);
-                        packets.add(bytes);
+                        // Relay announces its API channels to every backend on entering
+                        // play. That is proxy traffic, not the player's, so it is skipped
+                        // rather than counted -- otherwise it shifts every comparison by
+                        // one and the failure points at the wrong packet.
+                        if (!isChannelRegistration(bytes)) {
+                            packets.add(bytes);
+                        }
                     } finally {
                         frame.release();
                     }
