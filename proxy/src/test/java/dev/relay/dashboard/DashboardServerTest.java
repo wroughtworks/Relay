@@ -78,6 +78,29 @@ class DashboardServerTest {
     }
 
     /**
+     * The root serves the page, not a 404.
+     *
+     * <p>It is bundled in the jar rather than deployed beside the proxy, so the dashboard
+     * stays one artefact. This asserts the packaging as much as the route: a resources
+     * directory that fails to make it into the shadow jar looks exactly like a missing
+     * route, and only at runtime.
+     */
+    @Test
+    void servesThePageAtTheRoot(@TempDir Path dir) throws Exception {
+        int port = start(dir);
+
+        HttpResponse<String> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/")).build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, response.statusCode());
+        assertTrue(response.body().contains("<title>Relay</title>"),
+                "the root should be the dashboard page");
+        assertTrue(response.body().contains("/api/events"),
+                "the page should be wired to the live socket");
+    }
+
+    /**
      * Player records carry no IP address.
      *
      * <p>There is no authentication on this API yet. Saying who is online is one thing;

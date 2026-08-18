@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay</title>
+<style>
+  /* Self-contained on purpose: the proxy may well be running somewhere with no
+     route to the internet, and a dashboard that needs a CDN to render is a
+     dashboard that fails exactly when someone is trying to diagnose an outage. */
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --line: #e6e4e0; --text: #1c1b19;
+    --muted: #6b675f; --accent: #b4552d; --good: #3f7d4e; --bad: #b03030;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --panel: #1f1e1b; --line: #322f2a; --text: #edeae4;
+      --muted: #9a948a; --accent: #d97757; --good: #6db97f; --bad: #e06c6c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 20px 24px; border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; }
+  #link { margin-left: auto; font-size: 13px; color: var(--muted); }
+  #link b { color: var(--good); }
+  #link.down b { color: var(--bad); }
+  main { padding: 24px; max-width: 1100px; }
+  .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .tile .n { font-size: 26px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .tile .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+       color: var(--muted); margin: 28px 0 10px; font-weight: 600; }
+  .scroll { overflow-x: auto; background: var(--panel);
+            border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 16px; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px;
+       text-transform: uppercase; letter-spacing: 0.05em; }
+  tbody tr { border-top: 1px solid var(--line); }
+  td.num { font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 14px 16px; font-style: italic; }
+  #feed { font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          max-height: 260px; overflow-y: auto; padding: 10px 16px; }
+  #feed div { border-top: 1px solid var(--line); padding: 3px 0; }
+  #feed div:first-child { border-top: 0; }
+  .t { color: var(--muted); margin-right: 10px; }
+  .who { color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; padding: 0 24px 32px; max-width: 1100px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rel<span>ay</span></h1>
+  <span class="sub" id="meta">connecting…</span>
+  <span id="link">live <b>●</b></span>
+</header>
+
+<main>
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Backends</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Name</th><th>Address</th><th>Group</th><th>Players</th></tr></thead>
+    <tbody id="servers"></tbody>
+  </table></div>
+
+  <div id="groupsWrap" hidden>
+    <h2>Groups</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>Members</th><th>Players</th></tr></thead>
+      <tbody id="groups"></tbody>
+    </table></div>
+  </div>
+
+  <h2>Players</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Player</th><th>Backend</th><th>Protocol</th><th>Online</th></tr></thead>
+    <tbody id="players"></tbody>
+  </table></div>
+
+  <h2>Events</h2>
+  <div class="scroll"><div id="feed"><div class="empty">nothing yet</div></div></div>
+</main>
+
+<footer>
+  Read-only. Nothing here can move a player, close a connection, or change config —
+  and player addresses are deliberately not served, since this port has no login yet.
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const duration = s => {
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+};
+
+// Text nodes rather than innerHTML: usernames come from whoever joined the
+// server, and a player named after a <script> tag should be a curiosity in a
+// table cell, not a way into this page.
+const row = cells => {
+  const tr = document.createElement("tr");
+  for (const cell of cells) {
+    const td = document.createElement("td");
+    if (typeof cell === "number") td.className = "num";
+    td.textContent = cell === null || cell === undefined ? "—" : String(cell);
+    tr.appendChild(td);
+  }
+  return tr;
+};
+
+const fill = (tbody, rows, columns, emptyText) => {
+  tbody.replaceChildren();
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = columns;
+    td.className = "empty";
+    td.textContent = emptyText;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const r of rows) tbody.appendChild(r);
+};
+
+async function refresh() {
+  try {
+    const [overview, servers, groups, players] = await Promise.all(
+      ["overview", "servers", "groups", "players"]
+        .map(p => fetch("api/" + p).then(r => r.json())));
+
+    $("meta").textContent =
+      overview.version + " · listening on " + overview.bind + " · up " + duration(overview.uptimeSeconds);
+
+    $("tiles").replaceChildren(...[
+      ["Players", overview.players + " / " + overview.maxPlayers],
+      ["Backends", overview.servers],
+      ["Groups", overview.groups],
+      ["Balancing", overview.balance],
+      ["Uptime", duration(overview.uptimeSeconds)],
+    ].map(([k, n]) => {
+      const d = document.createElement("div");
+      d.className = "tile";
+      const nv = document.createElement("div");
+      nv.className = "n";
+      nv.textContent = n;
+      const kv = document.createElement("div");
+      kv.className = "k";
+      kv.textContent = k;
+      d.append(nv, kv);
+      return d;
+    }));
+
+    fill($("servers"), servers.map(s => row([s.name, s.address, s.group, s.players])),
+         4, "no backends configured");
+
+    $("groupsWrap").hidden = groups.length === 0;
+    fill($("groups"), groups.map(g => row([g.name, g.members.join(", "), g.players])),
+         3, "none");
+
+    fill($("players"),
+         players.map(p => row([p.username, p.server, p.protocol, duration(p.onlineSeconds)])),
+         4, "nobody online");
+  } catch (e) {
+    $("meta").textContent = "cannot reach the proxy";
+  }
+}
+
+function log(text, who) {
+  const feed = $("feed");
+  if (feed.firstChild && feed.firstChild.className === "empty") feed.replaceChildren();
+  const line = document.createElement("div");
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = new Date().toLocaleTimeString();
+  const name = document.createElement("span");
+  name.className = "who";
+  name.textContent = who ?? "";
+  line.append(time, name, document.createTextNode(who ? " " + text : text));
+  feed.prepend(line);
+  while (feed.childElementCount > 200) feed.lastChild.remove();
+}
+
+// The socket is what makes this live; the poll below is a safety net for the
+// state it cannot describe (player counts drifting, uptime ticking).
+function connect() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://")
+    + location.host + "/api/events");
+
+  ws.onopen = () => $("link").classList.remove("down");
+  ws.onclose = () => {
+    $("link").classList.add("down");
+    setTimeout(connect, 3000);
+  };
+  ws.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    const who = ev.player ? ev.player.username : "someone";
+    if (ev.type === "PLAYER_CONNECTED") log("joined on " + ev.to, who);
+    else if (ev.type === "PLAYER_DISCONNECTED") log("left" + (ev.from ? " from " + ev.from : ""), who);
+    else if (ev.type === "PLAYER_SWITCHED_SERVER") log("moved " + ev.from + " → " + ev.to, who);
+    else log(ev.type, who);
+    refresh();
+  };
+}
+
+refresh();
+setInterval(refresh, 5000);
+connect();
+</script>
+</body>
+</html>

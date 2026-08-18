@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import dev.relay.proxy.ProxyEvents;
 import dev.relay.proxy.RelayProxy;
 import io.javalin.Javalin;
+import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JsonMapper;
 import io.javalin.websocket.WsContext;
 import org.jetbrains.annotations.NotNull;
@@ -72,6 +73,15 @@ public final class DashboardServer {
                 config.showJavalinBanner = false;
                 config.jsonMapper(gsonMapper());
                 config.jetty.defaultHost = bind.getHostString();
+                // The page itself, from the jar. A 404 at the root is a poor answer
+                // for something that is running, and serving it here means the
+                // dashboard is one artefact rather than a proxy plus a web server
+                // someone has to remember to deploy beside it.
+                config.staticFiles.add(files -> {
+                    files.hostedPath = "/";
+                    files.directory = "/dashboard";
+                    files.location = Location.CLASSPATH;
+                });
             });
             routes();
             server.start(bind.getHostString(), bind.getPort());

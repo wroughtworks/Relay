@@ -13,7 +13,7 @@ those are phases 2 and 3.
 | Phase | Scope | State |
 |---|---|---|
 | 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins, plays, and switches servers |
-| 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | **Read-only API working**; frontend, auth and the acting half not started |
+| 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | **Read-only API and a live page working**; auth and the acting half not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
@@ -45,7 +45,7 @@ commands that reach the proxy by plugin message. See
 - **Client API**: a plugin-message protocol for client-side mods —
   see [docs/client-api.md](docs/client-api.md)
 - **Operations**: backpressure both directions, bounded buffers, graceful shutdown
-- **Dashboard API**: read-only REST plus a live WebSocket, off by default —
+- **Dashboard**: a live page plus read-only REST and a WebSocket, off by default —
   see [Dashboard API](#dashboard-api)
 
 ## Requirements
@@ -209,6 +209,11 @@ Phase 2's read-only half. Off by default; when on it binds to loopback:
 enabled = true
 bind = "127.0.0.1:8080"
 ```
+
+Open `http://127.0.0.1:8080` for the page itself — live tiles, backends, groups, players
+and an event feed. It is bundled in the jar, so the dashboard is one artefact rather than
+a proxy plus a web server to deploy beside it, and it has no external dependencies: a
+dashboard that needs a CDN to render fails exactly when someone is diagnosing an outage.
 
 | | |
 |---|---|
