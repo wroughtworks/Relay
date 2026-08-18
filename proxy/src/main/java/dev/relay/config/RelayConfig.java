@@ -29,6 +29,7 @@ public record RelayConfig(
         int connectTimeoutMillis,
         int readTimeoutMillis,
         boolean interceptCommands,
+        boolean fallbackOnBackendLoss,
         boolean proxyProtocolReceive,
         boolean proxyProtocolSend,
         boolean clientApiEnabled,

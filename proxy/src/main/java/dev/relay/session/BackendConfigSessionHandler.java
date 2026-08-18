@@ -120,12 +120,20 @@ public final class BackendConfigSessionHandler implements SessionHandler {
             attempt.markUnreachable(new IllegalStateException(
                     "Backend " + attempt.target().name() + " closed the connection during configuration"));
         }
-        // If the player was already committed to this backend there is nothing to fall
-        // back to; they have taken on its registries.
-        if (attempt.player().connectedServer() == attempt) {
-            attempt.player().disconnect(Component.text("Lost connection to " + attempt.target().name(),
-                    NamedTextColor.RED));
+        ConnectedPlayer player = attempt.player();
+        ServerConnection current = player.connectedServer();
+        if (current != null && current != attempt) {
+            // A switch that died before the client agreed to leave play state. The
+            // player never went anywhere, so they are still on their old server and
+            // whoever asked for the switch has already been told it failed.
+            return;
         }
+
+        // Otherwise the client is in configuration state with nothing configuring it,
+        // which no amount of waiting fixes: either another backend picks the client up
+        // where this one dropped it, or the session ends with a reason.
+        new BackendConnector(proxy, player).fallbackAfterLoss(attempt.target(), Component.text(
+                "Lost connection to " + attempt.target().name(), NamedTextColor.RED));
     }
 
     @Override

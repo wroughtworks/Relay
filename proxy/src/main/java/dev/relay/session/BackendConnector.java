@@ -19,13 +19,28 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Decides which backend a player lands on, and what happens when that fails.
  *
- * <p>Fallback applies only while the player is still being connected. Once a backend has
- * begun configuring the client there is no way back &mdash; the client has already taken
- * on that backend's registries &mdash; so a later failure is a disconnect, not a retry.
+ * <p>Two paths lead here, and they share the same walk down the candidate list: a player
+ * joining, and a player whose backend died under them. The second is the one that decides
+ * whether restarting a server is routine or ejects everyone from the network, so it is
+ * worth being precise about why it can work at all.
+ *
+ * <p>A client that has lost its backend is not stuck. It is still in play state on a live
+ * socket, and play state is exactly where a {@code /server} switch begins &mdash; ask the
+ * client to re-enter configuration, then let the next backend configure it from scratch.
+ * The dead server was only ever one half of the connection; nothing about its death
+ * prevents another server taking over. What genuinely cannot be recovered is a client
+ * that has already taken on a backend's registries and is committed to it, which is why
+ * {@link ConnectedPlayer#beginRecovery()} allows one rescue chain at a time and no more.
  */
 public final class BackendConnector {
 
     private static final Logger LOG = LoggerFactory.getLogger(BackendConnector.class);
+
+    /** Rescues closer together than this count as one flapping episode. */
+    private static final long FLAP_WINDOW_MILLIS = 30_000;
+
+    /** How many rescues in a row Relay will attempt before letting the session end. */
+    private static final int MAX_CONSECUTIVE_FALLBACKS = 3;
 
     private final RelayProxy proxy;
     private final ConnectedPlayer player;
@@ -38,15 +53,82 @@ public final class BackendConnector {
     /** Walks the configured try order, or the forced host for the address the player used. */
     public void connectToInitialServer() {
         List<String> candidates = proxy.config().initialCandidates(player.virtualHost());
+        if (!player.beginRecovery()) {
+            LOG.warn("{} is already being connected somewhere; ignoring a second initial connect",
+                    player.username());
+            return;
+        }
         tryCandidate(candidates, 0, null);
+    }
+
+    /**
+     * Moves a player whose backend died out from under them to the next server that will
+     * have them, rather than ending their session with it.
+     *
+     * <p>Without this, restarting one backend disconnects every player on it from the
+     * network entirely &mdash; they are returned to the multiplayer menu, not to the
+     * lobby &mdash; which is the difference between a routine restart and an outage.
+     *
+     * @param lost   the backend that went away; excluded from the candidates, since it
+     *               has just proved it cannot hold a session
+     * @param reason shown to the player if nothing else will take them
+     */
+    public void fallbackAfterLoss(RegisteredServer lost, Component reason) {
+        if (!player.isActive()) {
+            return;
+        }
+        if (!proxy.config().fallbackOnBackendLoss()) {
+            player.disconnect(reason);
+            return;
+        }
+        // Someone is already walking the list for this player -- an initial connect, or
+        // an earlier rescue. Starting a second walk would race it for the same client.
+        if (!player.beginRecovery()) {
+            LOG.debug("{} lost {} while already being connected elsewhere; leaving it to that attempt",
+                    player.username(), lost.name());
+            return;
+        }
+
+        List<String> candidates = proxy.config().initialCandidates(player.virtualHost()).stream()
+                .filter(name -> !name.equals(lost.name()))
+                .toList();
+        if (candidates.isEmpty()) {
+            LOG.info("Nowhere to move {} after losing {}: it is the only server they could be sent to",
+                    player.username(), lost.name());
+            giveUp(reason);
+            return;
+        }
+
+        int consecutive = player.recordFallback(FLAP_WINDOW_MILLIS);
+        if (consecutive > MAX_CONSECUTIVE_FALLBACKS) {
+            LOG.warn("{} has been moved {} times in under {}s; ending the session instead of "
+                            + "bouncing them between servers that will not hold a connection",
+                    player.username(), consecutive - 1, FLAP_WINDOW_MILLIS / 1000);
+            giveUp(reason);
+            return;
+        }
+
+        LOG.info("Moving {} off {} after it dropped them; trying {}",
+                player.username(), lost.name(), candidates);
+        // Said now, while the player is still in play state: the switch takes them out of
+        // it, and chat sent in configuration state has nowhere to render.
+        player.sendMessage(Component.text("Lost connection to " + lost.name()
+                + ". Moving you to another server...", NamedTextColor.YELLOW));
+        tryCandidate(candidates, 0, reason);
+    }
+
+    private void giveUp(Component reason) {
+        player.endRecovery();
+        player.disconnect(reason);
     }
 
     private void tryCandidate(List<String> candidates, int index, Component lastReason) {
         if (!player.isActive()) {
+            player.endRecovery();
             return;
         }
         if (index >= candidates.size()) {
-            player.disconnect(lastReason != null
+            giveUp(lastReason != null
                     ? lastReason
                     : Component.text("No available server to connect you to", NamedTextColor.RED));
             return;
@@ -68,6 +150,7 @@ public final class BackendConnector {
                 return;
             }
             if (result.successful()) {
+                player.endRecovery();
                 return;
             }
             logFailure(server, result);

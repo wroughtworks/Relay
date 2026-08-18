@@ -34,6 +34,8 @@ commands that reach the proxy by plugin message. See
 - **Forwarding**: modern (Velocity-compatible, HMAC signed), legacy (BungeeCord), none
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
+- **Resilience**: a backend that dies moves its players to the next server in the try
+  list rather than off the network, so restarting one server is not an outage
 - **Commands**: `/server`, `/glist`, `/find`, `/send`, with permission nodes
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
@@ -203,6 +205,11 @@ client completing a switch. Every other version in the supported range is still
 inference. See
 [docs/protocol-ids.md](docs/protocol-ids.md) — the failure modes are deliberately
 bounded, and any id can be corrected from `relay.toml` without a rebuild.
+
+**A rescued player rejoins from scratch.** Relay moves connections, not game state
+(spec &sect;5.4), so someone whose server died lands in the lobby at its spawn — not
+where they were, and with whatever inventory that backend last saved. Recovering more
+than the connection is a backend-database problem.
 
 **Single proxy, no persistence.** No bans, whitelist or session history — spec §6.3's
 SQLite storage is phase 2, along with the dashboard. Clustering is a non-goal in §2.

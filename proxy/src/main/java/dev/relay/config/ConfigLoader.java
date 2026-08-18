@@ -104,6 +104,9 @@ public final class ConfigLoader {
         int connectTimeout = config.getIntOrElse("connect-timeout", 5000);
         int readTimeout = config.getIntOrElse("read-timeout", 30000);
         boolean interceptCommands = config.getOrElse("intercept-commands", Boolean.TRUE);
+        // On by default: without it, restarting one backend returns every player on
+        // it to the multiplayer menu instead of the lobby.
+        boolean fallbackOnBackendLoss = config.getOrElse("fallback-on-backend-loss", Boolean.TRUE);
         boolean proxyProtocolReceive = config.getOrElse("proxy-protocol-receive", Boolean.FALSE);
         boolean proxyProtocolSend = config.getOrElse("proxy-protocol-send", Boolean.FALSE);
         boolean clientApiEnabled = config.getOrElse("client-api", Boolean.TRUE);
@@ -137,7 +140,7 @@ public final class ConfigLoader {
         return new RelayConfig(path.toAbsolutePath(),
                 bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
-                interceptCommands, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
+                interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
                 servers, tryOrder, forcedHosts, permissions, overrides);
     }
 

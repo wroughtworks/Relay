@@ -132,8 +132,10 @@ public final class BackendPlaySessionHandler implements SessionHandler {
 
         player.setConnectedServer(null);
         server.disconnect();
-        player.disconnect(Component.text("Lost connection to " + server.target().name(),
-                NamedTextColor.RED));
+        // Detached first, so the rescue below starts from a player with no backend
+        // rather than one still pointing at a socket that has gone.
+        new BackendConnector(proxy, player).fallbackAfterLoss(server.target(),
+                Component.text("Lost connection to " + server.target().name(), NamedTextColor.RED));
     }
 
     /** The mirror of the player-side backpressure check. */

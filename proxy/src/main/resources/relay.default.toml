@@ -93,6 +93,21 @@ intercept-commands = true
 # accepts the connection and then never answers.
 proxy-protocol-send = false
 
+# ------------------------------------------------------------ backend failure
+#
+# When a backend a player is on goes away -- a crash, a restart, a kick from the
+# server itself -- move that player to the next server in the "try" list below
+# instead of ending their session.
+#
+# This is the difference between restarting a server being routine and it being
+# an outage. With it off, everyone on that backend is returned to the multiplayer
+# menu; with it on, they land in the lobby and can walk back when it returns.
+#
+# Relay gives up after three moves in under thirty seconds, so two backends that
+# both accept players and immediately drop them cannot bounce someone forever.
+fallback-on-backend-loss = true
+
+
 # ----------------------------------------------------------------- client api
 #
 # Lets a client-side mod talk to the proxy over the "relay:api_v1" plugin channel:

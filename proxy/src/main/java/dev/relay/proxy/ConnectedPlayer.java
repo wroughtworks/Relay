@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** A player, their socket, and whichever backend they are currently talking to. */
@@ -31,6 +32,12 @@ public final class ConnectedPlayer {
 
     private final AtomicReference<ServerConnection> connectedServer = new AtomicReference<>();
     private final AtomicReference<ServerConnection> connectionInFlight = new AtomicReference<>();
+
+    /** Held while a chain of fallback candidates is being walked for this player. */
+    private final AtomicBoolean recovering = new AtomicBoolean();
+
+    private long lastFallbackAt;
+    private int consecutiveFallbacks;
 
     public ConnectedPlayer(MinecraftConnection connection, GameProfile profile, ProtocolVersion version,
                            String virtualHost) {
@@ -107,6 +114,48 @@ public final class ConnectedPlayer {
 
     public void endConnect(ServerConnection attempt) {
         connectionInFlight.compareAndSet(attempt, null);
+    }
+
+    /**
+     * Claims the right to walk a list of servers looking for one that will take this
+     * player.
+     *
+     * <p>Exactly one chain may run at a time. Both the initial join and a rescue after a
+     * backend dies work by trying candidates in order, and a second chain starting
+     * underneath the first would have two attempts racing to configure one client
+     * &mdash; the same hazard {@link #beginConnect} guards, one level up.
+     *
+     * @return {@code false} if a chain is already running, in which case the caller must
+     *         leave the player to it
+     */
+    public boolean beginRecovery() {
+        return recovering.compareAndSet(false, true);
+    }
+
+    public void endRecovery() {
+        recovering.set(false);
+    }
+
+    public boolean isRecovering() {
+        return recovering.get();
+    }
+
+    /**
+     * Counts a rescue, treating ones close together as a single flapping episode.
+     *
+     * <p>Two backends that both accept a player and then drop them would otherwise pass
+     * them back and forth forever. Spacing is what separates that from ordinary
+     * operation: a server going down twice inside the window is already abnormal,
+     * whereas one going down twice in an evening should get a full set of retries each
+     * time.
+     *
+     * @return how many rescues have now happened in a row within {@code windowMillis}
+     */
+    public int recordFallback(long windowMillis) {
+        long now = System.currentTimeMillis();
+        consecutiveFallbacks = now - lastFallbackAt <= windowMillis ? consecutiveFallbacks + 1 : 1;
+        lastFallbackAt = now;
+        return consecutiveFallbacks;
     }
 
     public boolean isActive() {
