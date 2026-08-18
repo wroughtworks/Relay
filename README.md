@@ -12,16 +12,18 @@ those are phases 2 and 3.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins and plays through the proxy |
+| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins, plays, and switches servers |
 | 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | Not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
 
 A vanilla 1.20.2 client has joined a Paper backend through Relay in online mode, with
-modern forwarding, and played normally. What has been exercised against real software is
-the join path: handshake, status, encryption, Mojang authentication, modern forwarding,
-configuration, and sustained play traffic in both directions. See
+modern forwarding, played normally, and moved to a second backend with `/server`. What
+has been exercised against real software is the join path — handshake, status,
+encryption, Mojang authentication, modern forwarding, configuration, sustained play
+traffic in both directions — and the switch path, including the backend-registered
+commands that reach the proxy by plugin message. See
 [Before you trust it](#before-you-trust-it) for what has not.
 
 ## What works
@@ -194,18 +196,13 @@ bug cannot pass.
 
 Joining works. These are the gaps between that and running a network on it.
 
-**Only 1.20.2 has been exercised for real.** Handshake, status, login and configuration
-ids are now confirmed against a live Paper 1.20.2 server's own packet log, and the
-serverbound play ids Relay decodes were confirmed from live traffic. Every other version
-in the supported range is still inference. See
+**Only 1.20.2 has been exercised for real.** Every id Relay uses at 1.20.2 is now
+confirmed — handshake, status, login and configuration against a live Paper server's own
+packet log, the serverbound play ids from live traffic, and the two switch ids by a real
+client completing a switch. Every other version in the supported range is still
+inference. See
 [docs/protocol-ids.md](docs/protocol-ids.md) — the failure modes are deliberately
 bounded, and any id can be corrected from `relay.toml` without a rebuild.
-
-**`/server` switching has not been done by a real client.** It is covered end to end by
-`ServerSwitchTest`, which drives a full switch between two backends over real sockets,
-but that test asserts the ids Relay believes rather than the ones Mojang shipped. If a
-switch fails against a live client, `configuration_acknowledged` is the first id to
-check.
 
 **Single proxy, no persistence.** No bans, whitelist or session history — spec §6.3's
 SQLite storage is phase 2, along with the dashboard. Clustering is a non-goal in §2.
@@ -235,8 +232,8 @@ backend-database problem. Relay moves connections and nothing else.
 ```
 relay/
 ├── proxy/          the proxy itself (Java 21)
-├── paper-plugin/   RelayDebug, a backend-side diagnostic plugin (Java 17)
-├── docs/           protocol ids, client API
+├── paper-plugin/   Relay, the backend-side plugin (Java 17)
+├── docs/           protocol ids, backend and client APIs
 └── relay.py        development helper
 ```
 

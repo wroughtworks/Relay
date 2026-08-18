@@ -115,9 +115,9 @@ by one.
 
 | Packet | 1.20.2–1.20.4 | 1.20.5–1.21.1 | 1.21.2–1.21.3 | 1.21.4+ |
 |---|---|---|---|---|
-| `chat_command` | `0x04` | `0x04` | `0x04` | `0x05` |
-| `configuration_acknowledged` | `0x0B` | `0x0C` | `0x0D` | `0x0E` |
-| `plugin_message` | `0x0F` | `0x10` | `0x11` | `0x12` |
+| `chat_command` | `0x04` ✓ | `0x04` | `0x04` | `0x05` |
+| `configuration_acknowledged` | `0x0B` ✓ | `0x0C` | `0x0D` | `0x0E` |
+| `plugin_message` | `0x0F` ✓ | `0x10` | `0x11` | `0x12` |
 
 Notes on what moved and why:
 
@@ -135,11 +135,24 @@ Notes on what moved and why:
 |---|---|---|---|---|---|
 | `disconnect` | `0x1B` | `0x1B` | `0x1D` | `0x1D` | `0x1C` |
 | `system_chat` | `0x67` ✓ | `0x69` | `0x6B` | `0x72` | `0x73` |
-| `start_configuration` | `0x65` | `0x67` | `0x69` | `0x70` | `0x71` |
+| `start_configuration` | `0x65` ✓ | `0x67` | `0x69` | `0x70` | `0x71` |
 | `plugin_message` | `0x18` | `0x19` | `0x19` | `0x18` | `0x19` |
 
 ✓ = confirmed against a live Paper 1.20.2 debug log. Everything else in this table is
 still unverified.
+
+Every 1.20.2 id above is now confirmed, and the last two were confirmed by a real client
+rather than by reading a log. A live 1.20.2 client switched servers with `/server`, which
+can only happen if `start_configuration` (`0x65`) is the packet the client accepts *and*
+`configuration_acknowledged` (`0x0B`) is the reply Relay recognises. A wrong value for
+either leaves the player stuck on the old backend.
+
+One more id worth recording even though Relay does not decode it: Paper's log shows
+`IN: [play:20] ServerboundKeepAlivePacket`, so **Keep Alive is `0x14`** at 1.20.2, not
+`0x12` as several community tables have it. That matters as a check on the ones above:
+everything at or below `0x0F` is unshifted relative to those tables, and the drift starts
+after it. `chat_command`, `configuration_acknowledged` and `plugin_message` all sit below
+the shift, which is why they were right.
 
 > **Two bugs were found here on 2026-07-23, both from a real server log.** `system_chat`
 > was `0x64` at 1.20.2 when Paper's own packet log proves it is `0x67`

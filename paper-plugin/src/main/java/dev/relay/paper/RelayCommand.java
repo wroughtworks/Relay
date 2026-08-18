@@ -61,7 +61,7 @@ final class RelayCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 String text = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-                probe.api().forward(player, "ALL", "RelayDebugTest",
+                probe.api().forward(player, "ALL", "RelayTest",
                         text.getBytes(StandardCharsets.UTF_8));
                 sender.sendMessage("Forwarded to every other server that has a player on it.");
             }

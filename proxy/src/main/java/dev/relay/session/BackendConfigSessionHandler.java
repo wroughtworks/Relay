@@ -4,6 +4,7 @@ import dev.relay.net.MinecraftConnection;
 import dev.relay.net.SessionHandler;
 import dev.relay.protocol.Packet;
 import dev.relay.protocol.ProtocolState;
+import dev.relay.protocol.ProtocolUtils;
 import dev.relay.protocol.packet.play.StartConfigurationPacket;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RelayProxy;
@@ -72,6 +73,8 @@ public final class BackendConfigSessionHandler implements SessionHandler {
         }
 
         if (!pending.isEmpty()) {
+            LOG.debug("Draining queued configuration to {} for the switch to {}",
+                    player.username(), attempt.target().name());
             pending.drainTo(player.connection());
         }
     }
@@ -88,6 +91,15 @@ public final class BackendConfigSessionHandler implements SessionHandler {
 
     private void forward(Object msg) {
         MinecraftConnection client = attempt.player().connection();
+        // The configuration phase of a switch is short and entirely opaque to Relay, so
+        // when a client rejects it there is otherwise nothing to inspect. Logging each
+        // packet id names the one it stopped on.
+        if (LOG.isDebugEnabled() && msg instanceof ByteBuf frame) {
+            LOG.debug("{} config -> {}: 0x{} ({}B){}", attempt.target().name(),
+                    attempt.player().username(),
+                    Integer.toHexString(ProtocolUtils.readVarInt(frame.duplicate())),
+                    frame.readableBytes(), clientReady ? "" : " [queued]");
+        }
         if (clientReady && client.isActive()) {
             client.relay(msg);
             return;
