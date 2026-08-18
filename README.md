@@ -11,15 +11,17 @@ modes. No dashboard, no plugin system — those are phases 2 and 3.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Built, untested against a live client** |
+| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins and plays through the proxy |
 | 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | Not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
 
-Everything below is verified by the test suite or by running the jar. What is **not**
-verified is behaviour against a real Minecraft client — see
-[Before you trust it](#before-you-trust-it).
+A vanilla 1.20.2 client has joined a Paper backend through Relay in online mode, with
+modern forwarding, and played normally. What has been exercised against real software is
+the join path: handshake, status, encryption, Mojang authentication, modern forwarding,
+configuration, and sustained play traffic in both directions. See
+[Before you trust it](#before-you-trust-it) for what has not.
 
 ## What works
 
@@ -169,19 +171,26 @@ bug cannot pass.
 
 ## Before you trust it
 
-Two things are worth knowing before this goes anywhere near players.
+Joining works. These are the gaps between that and running a network on it.
 
-**Packet ids are unverified.** Relay depends on about twenty packet ids. Those in
-handshake, status, login and configuration state are stable and confident. The five
-play-state ids are the ones that move whenever Mojang inserts a packet, and they have
-not been checked against a live client. The failure modes are deliberately bounded — see
-[docs/protocol-ids.md](docs/protocol-ids.md) — and any id can be corrected from
-`relay.toml` without a rebuild. Verify them before a production cutover.
+**Only 1.20.2 has been exercised for real.** Handshake, status, login and configuration
+ids are now confirmed against a live Paper 1.20.2 server's own packet log, and the
+serverbound play ids Relay decodes were confirmed from live traffic. Every other version
+in the supported range is still inference. See
+[docs/protocol-ids.md](docs/protocol-ids.md) — the failure modes are deliberately
+bounded, and any id can be corrected from `relay.toml` without a rebuild.
 
-**Nothing has been run against a real Minecraft client.** The tests prove the codecs are
-self-consistent and that the proxy answers a socket correctly. They cannot prove a
-vanilla client is happy with what comes back. The first real test is: join, switch
-servers with `/server`, and confirm chunks load on the far side.
+**`/server` switching has not been done by a real client.** It is covered end to end by
+`ServerSwitchTest`, which drives a full switch between two backends over real sockets,
+but that test asserts the ids Relay believes rather than the ones Mojang shipped. If a
+switch fails against a live client, `configuration_acknowledged` is the first id to
+check.
+
+**Single proxy, no persistence.** No bans, whitelist or session history — spec §6.3's
+SQLite storage is phase 2, along with the dashboard. Clustering is a non-goal in §2.
+
+**Plugins run unsandboxed** once phase 3 lands, as §5.5 sets out. Nothing to worry about
+yet, since there is no plugin loader.
 
 ## Design notes
 

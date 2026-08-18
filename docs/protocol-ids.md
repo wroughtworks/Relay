@@ -5,13 +5,27 @@ Everything else is relayed as an opaque frame. This document lists the ids Relay
 actually depends on, so adding a Minecraft version means checking this page rather than
 auditing a protocol dump.
 
-**These ids have not been verified against a live client.** They were written from the
-protocol layout and are the single most likely thing to need correcting. Verify each one
-against [minecraft.wiki/w/Java_Edition_protocol](https://minecraft.wiki/w/Java_Edition_protocol)
-for the version you are targeting before running against production, and check the
-play-state rows first — those are the ones that move.
+**1.20.2 is now confirmed against a live server; the rest is still inference.** Rows
+marked ✓ were checked against a real Paper 1.20.2 instance — either its own packet log
+(`net.minecraft.network` at DEBUG prints every id it handles) or Relay's packet trail,
+which records id and byte count for the last frames on a connection. Everything else was
+written from the protocol layout and remains the most likely thing to need correcting.
+Verify against
+[minecraft.wiki/w/Java_Edition_protocol](https://minecraft.wiki/w/Java_Edition_protocol)
+for the version you are targeting, and check the play-state rows first — those are the
+ones that move.
 
-The source of truth is [`StateRegistry.java`](../src/main/java/dev/relay/protocol/StateRegistry.java).
+## The bug this table caused
+
+A frame's *length* prefix, not its id, once closed connections at random. The framing
+decoder treated a leading `0xFE` as a pre-1.7 legacy ping and closed the channel — but
+`0xFE` is also the first byte of the length VarInt for any frame of 254, 382, 510 … bytes,
+so roughly one frame in 128 was mistaken for a ping. A busy connection hit one within a
+second, with no exception and no disconnect packet, leaving each end convinced the other
+had hung up. The check now runs only on the first byte of a player connection.
+`PipelineCodecTest` guards it.
+
+The source of truth is [`StateRegistry.java`](../proxy/src/main/java/dev/relay/protocol/StateRegistry.java).
 
 ## Why a wrong id degrades instead of corrupting
 
@@ -21,7 +35,7 @@ radius:
 | Area | If the id is wrong | Severity |
 |---|---|---|
 | Clientbound **play** | Registered write-only. Relay never decodes backend→client play traffic, so gameplay is unaffected. Only Relay's own messages and the switch prompt break. | Contained |
-| Serverbound **play** | Only the unsigned chat command is decoded. A wrong id means `/server` falls through to the backend, which reports it as unknown. | Obvious, harmless |
+| Serverbound **play** | Three packets are decoded: the unsigned chat command, the configuration acknowledgement, and the client-API plugin message. A wrong chat id makes `/server` fall through to the backend as unknown; a wrong configuration id breaks switching. | Mixed |
 | **Configuration** | A wrong id breaks joining. Loud and immediate. | Blocking |
 | Handshake / status / **login** | Stable across the whole supported range. | Very unlikely to move |
 
@@ -63,15 +77,15 @@ uses, so nothing shifted.
 
 | Direction | Packet | ID | Versions |
 |---|---|---|---|
-| serverbound | `login_start` | `0x00` | all |
+| serverbound | `login_start` | `0x00` ✓ | all |
 | serverbound | `encryption_response` | `0x01` | all |
-| serverbound | `login_plugin_response` | `0x02` | all |
-| serverbound | `login_acknowledged` | `0x03` | 1.20.2+ |
+| serverbound | `login_plugin_response` | `0x02` ✓ | all |
+| serverbound | `login_acknowledged` | `0x03` ✓ | 1.20.2+ |
 | clientbound | `login_disconnect` | `0x00` | all |
 | clientbound | `encryption_request` | `0x01` | all |
-| clientbound | `login_success` | `0x02` | all |
-| clientbound | `set_compression` | `0x03` | all |
-| clientbound | `login_plugin_request` | `0x04` | all |
+| clientbound | `login_success` | `0x02` ✓ | all |
+| clientbound | `set_compression` | `0x03` ✓ | all |
+| clientbound | `login_plugin_request` | `0x04` ✓ | all |
 
 Field-level version differences, handled in the packet classes rather than here:
 
@@ -87,11 +101,11 @@ by one.
 
 | Direction | Packet | 1.20.2 – 1.20.4 | 1.20.5+ |
 |---|---|---|---|
-| serverbound | `plugin_message` | `0x01` | `0x02` |
-| serverbound | `finish_configuration_ack` | `0x02` | `0x03` |
-| clientbound | `plugin_message` | `0x00` | `0x01` |
+| serverbound | `plugin_message` | `0x01` ✓ | `0x02` |
+| serverbound | `finish_configuration_ack` | `0x02` ✓ | `0x03` |
+| clientbound | `plugin_message` | `0x00` ✓ | `0x01` |
 | clientbound | `disconnect` *(write-only)* | `0x01` | `0x02` |
-| clientbound | `finish_configuration` | `0x02` | `0x03` |
+| clientbound | `finish_configuration` | `0x02` ✓ | `0x03` |
 
 ## Play
 
@@ -103,6 +117,7 @@ by one.
 |---|---|---|---|---|
 | `chat_command` | `0x04` | `0x04` | `0x04` | `0x05` |
 | `configuration_acknowledged` | `0x0B` | `0x0C` | `0x0D` | `0x0E` |
+| `plugin_message` | `0x0F` | `0x10` | `0x11` | `0x12` |
 
 Notes on what moved and why:
 
@@ -121,7 +136,7 @@ Notes on what moved and why:
 | `disconnect` | `0x1B` | `0x1B` | `0x1D` | `0x1D` | `0x1C` |
 | `system_chat` | `0x67` ✓ | `0x69` | `0x6B` | `0x72` | `0x73` |
 | `start_configuration` | `0x65` | `0x67` | `0x69` | `0x70` | `0x71` |
-| `plugin_message` | `0x17` | `0x18` | `0x19` | `0x18` | `0x19` |
+| `plugin_message` | `0x18` | `0x19` | `0x19` | `0x18` | `0x19` |
 
 ✓ = confirmed against a live Paper 1.20.2 debug log. Everything else in this table is
 still unverified.
@@ -137,16 +152,6 @@ still unverified.
 > packets claiming one id fail at startup rather than in front of a player. The later
 > `system_chat` values keep the +2 offset from `start_configuration` that holds at 1.20.2;
 > verify them before trusting them.
-
-### Serverbound (decoded)
-
-| Packet | 1.20.2 | 1.20.5+ | 1.21.2+ | 1.21.4+ |
-|---|---|---|---|---|
-| `plugin_message` | `0x0D` | `0x0F` | `0x12` | `0x14` |
-
-Registered for the [client API](client-api.md), which needs Relay to claim its own channel
-rather than relay it blindly. A wrong id here means the API channel is passed to the
-backend instead of being handled — the mod sees no response, and nothing else breaks.
 
 ## Adding a Minecraft version
 
