@@ -1,6 +1,7 @@
 package dev.relay.config;
 
 import com.electronwill.nightconfig.core.Config;
+import com.electronwill.nightconfig.core.io.ParsingMode;
 import com.electronwill.nightconfig.toml.TomlFormat;
 import dev.relay.config.RelayConfig.ProtocolOverride;
 import dev.relay.config.RelayConfig.ServerEntry;
@@ -22,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Reads {@code relay.toml}, writing a commented starter file on first run.
@@ -31,6 +34,14 @@ import java.util.Map;
  * boot: the former fails at 3am under load, the latter fails while someone is watching.
  */
 public final class ConfigLoader {
+
+    /**
+     * A backend that looks like one of several numbered copies.
+     *
+     * <p>The separator is required: without it {@code s3} would name a group {@code s},
+     * and a rule that fires on names nobody meant as a group is worse than no rule.
+     */
+    private static final Pattern NUMBERED_SERVER = Pattern.compile("^(.*[^-_])[-_]\\d+$");
 
     private static final Logger LOG = LoggerFactory.getLogger(ConfigLoader.class);
 
@@ -58,7 +69,13 @@ public final class ConfigLoader {
         }
 
         try (Reader reader = new StringReader(text)) {
-            Config config = TomlFormat.instance().createParser().parse(reader);
+            // Parsed into a config backed by a LinkedHashMap rather than letting the
+            // parser build its own. Nightconfig's default is a HashMap, so declaration
+            // order is lost -- and this file depends on it in three places: the /server
+            // listing, the startup log, and the implicit fallback when no "try" list is
+            // given, which otherwise sends players to an arbitrary backend.
+            Config config = Config.of(LinkedHashMap::new, TomlFormat.instance());
+            TomlFormat.instance().createParser().parse(reader, config, ParsingMode.REPLACE);
             return parse(config, path);
         }
     }
@@ -193,7 +210,7 @@ public final class ConfigLoader {
         Config section = config.get("groups");
         Map<String, List<String>> groups = new LinkedHashMap<>();
         if (section == null) {
-            return groups;
+            return deriveGroups(servers, groups);
         }
         for (Config.Entry entry : section.entrySet()) {
             String name = entry.getKey().toLowerCase(Locale.ROOT);
@@ -214,7 +231,45 @@ public final class ConfigLoader {
             }
             groups.put(name, List.copyOf(members));
         }
-        return groups;
+        return deriveGroups(servers, groups);
+    }
+
+    /**
+     * Groups backends whose names already say they belong together.
+     *
+     * <p>{@code survival-01} and {@code survival-02} are a group called {@code survival}
+     * without anyone writing that down. Numbering servers is what people do anyway, so
+     * the config for the common case becomes no config at all &mdash; and the alternative,
+     * repeating every backend name a second time under {@code [groups]}, is a list that
+     * can silently fall out of date the next time a server is added.
+     *
+     * <p>Deliberately narrow. Only a separator followed by digits counts, so
+     * {@code pvp-arena} and {@code lobby} are left alone; a name has to look like one of
+     * several numbered copies, not merely contain a dash.
+     *
+     * <p>Anything written under {@code [groups]} wins, and a real backend's name always
+     * wins over a derived group, so nothing here can override something stated outright.
+     */
+    private static Map<String, List<String>> deriveGroups(Map<String, ServerEntry> servers,
+                                                          Map<String, List<String>> explicit) {
+        Map<String, List<String>> derived = new LinkedHashMap<>();
+        for (String server : servers.keySet()) {
+            Matcher matcher = NUMBERED_SERVER.matcher(server);
+            if (!matcher.matches()) {
+                continue;
+            }
+            String base = matcher.group(1);
+            // A backend of that name already means something, and a group cannot shadow
+            // it. Someone running "survival" beside "survival-01" gets the backend.
+            if (servers.containsKey(base) || explicit.containsKey(base)) {
+                continue;
+            }
+            derived.computeIfAbsent(base, key -> new ArrayList<>()).add(server);
+        }
+
+        Map<String, List<String>> all = new LinkedHashMap<>(explicit);
+        derived.forEach((name, members) -> all.put(name, List.copyOf(members)));
+        return all;
     }
 
     /** Accepts either a backend or a group, since anywhere a player can be sent takes both. */

@@ -259,6 +259,112 @@ class ConfigLoaderTest {
         assertEquals(List.of("survival"), config.initialCandidates("pvp.example.com"));
     }
 
+    /**
+     * Backends keep the order they were written in.
+     *
+     * <p>Three things read that order — the {@code /server} listing, the startup log, and
+     * the implicit fallback when no {@code try} list is given — and the last of those
+     * decides where players land. The TOML parser's default map is a {@code HashMap},
+     * which loses it silently: nothing fails, players simply arrive somewhere nobody
+     * chose.
+     *
+     * <p>Enough names here that hash order cannot match declaration order by luck. With
+     * the default parser this list comes back starting at {@code zeta}.
+     */
+    @Test
+    void keepsBackendsInTheOrderTheyWereDeclared(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+                survival-01 = "127.0.0.1:25567"
+                survival-02 = "127.0.0.1:25568"
+                pvp_1 = "127.0.0.1:25569"
+                pvp_2 = "127.0.0.1:25570"
+                zeta = "127.0.0.1:25571"
+                """);
+
+        RelayConfig config = ConfigLoader.load(path);
+        assertEquals(List.of("lobby", "survival-01", "survival-02", "pvp_1", "pvp_2", "zeta"),
+                List.copyOf(config.servers().keySet()));
+
+        // With no "try" list, the first declared backend is where players go.
+        assertEquals(List.of("lobby"), config.tryOrder());
+    }
+
+    /**
+     * Numbered backends group themselves, with no {@code [groups]} block at all.
+     *
+     * <p>Numbering copies of a server is what people already do, so the common case
+     * should cost no configuration. The alternative — listing every backend a second
+     * time under {@code [groups]} — is a list that silently goes stale the next time
+     * someone adds a server and forgets.
+     */
+    @Test
+    void numberedBackendsGroupThemselves(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+                survival-01 = "127.0.0.1:25567"
+                survival-02 = "127.0.0.1:25568"
+                pvp_1 = "127.0.0.1:25569"
+                pvp_2 = "127.0.0.1:25570"
+                """);
+
+        RelayConfig config = ConfigLoader.load(path);
+        assertEquals(List.of("survival-01", "survival-02"), config.groups().get("survival"));
+        assertEquals(List.of("pvp_1", "pvp_2"), config.groups().get("pvp"),
+                "an underscore separator is as much a numbering convention as a dash");
+        assertFalse(config.groups().containsKey("lobby"), "an unnumbered backend is not a group");
+    }
+
+    /**
+     * The rule stays narrow, because a group nobody asked for is worse than none.
+     *
+     * <p>Three ways it must not fire: a name that merely contains a separator, a name
+     * whose base is already a real backend, and a base that an explicit group has
+     * claimed. In every case something was stated outright and inference must not
+     * override it.
+     */
+    @Test
+    void derivedGroupsNeverOverrideSomethingStatedOutright(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+
+                [servers]
+                pvp-arena = "127.0.0.1:25566"
+                survival = "127.0.0.1:25567"
+                survival-01 = "127.0.0.1:25568"
+                creative-01 = "127.0.0.1:25569"
+                creative-02 = "127.0.0.1:25570"
+
+                [groups]
+                creative = ["creative-01"]
+                """);
+
+        RelayConfig config = ConfigLoader.load(path);
+
+        // A dash is not a number. "pvp-arena" is one server with a hyphenated name.
+        assertFalse(config.groups().containsKey("pvp"),
+                "a separator alone should not make a group, or every hyphenated name becomes one");
+
+        // A backend already owns the name "survival", and a group cannot shadow it --
+        // that is the very collision the explicit path rejects outright.
+        assertFalse(config.groups().containsKey("survival"));
+
+        // Written down beats inferred: the operator deliberately left creative-02 out.
+        assertEquals(List.of("creative-01"), config.groups().get("creative"));
+    }
+
     @Test
     void rejectsGroupsThatWouldMakeANameAmbiguousOrEmpty(@TempDir Path dir) throws IOException {
         // A group sharing a backend's name: /server lobby could mean either, and which

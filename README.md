@@ -34,8 +34,8 @@ commands that reach the proxy by plugin message. See
 - **Forwarding**: modern (Velocity-compatible, HMAC signed), legacy (BungeeCord), none
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
-- **Groups**: several interchangeable backends under one name, balanced by fewest
-  players, round robin, random, or priority order
+- **Groups**: `survival-01` and `survival-02` are a group called `survival` with no
+  config at all, balanced by fewest players, round robin, random, or priority order
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
@@ -156,25 +156,32 @@ java -jar proxy/build/libs/proxy-0.1.0-SNAPSHOT.jar --config relay.toml
 
 ## Server groups
 
-Several interchangeable backends can share one name:
+Several interchangeable backends can share one name. Usually there is nothing to
+configure — numbered backends group themselves:
 
 ```toml
-balance = "least-players"
-try = ["lobby", "survival"]
-
 [servers]
 lobby = "127.0.0.1:25566"
 survival-01 = "127.0.0.1:25567"
 survival-02 = "127.0.0.1:25568"
-
-[groups]
-survival = ["survival-01", "survival-02"]
 ```
 
-Players type `/server survival` and land on whichever member is the better host right
-now. Naming a member directly still works — that is how someone rejoins the server their
-base is on. A group can be used anywhere a backend can: `try`, forced hosts, `/send`, and
-both plugin-message APIs.
+`survival` now names the group. Players type `/server survival` and land on whichever
+member is the better host right now; naming a member directly still works, which is how
+someone rejoins the server their base is on. A group is a destination anywhere a backend
+is: `try`, forced hosts, `/send`, and both plugin-message APIs.
+
+Only a separator followed by digits counts, so `pvp-arena` stays one server. Write a
+`[groups]` block out only to say something the naming does not — an odd set, or members
+that are not numbered:
+
+```toml
+[groups]
+hub = ["lobby", "spawn"]
+```
+
+An explicit entry wins over the derived one, and a real backend's name always wins over
+a group.
 
 Balancing and failover are deliberately one mechanism rather than two. A group never
 answers with a single server; it answers with all of its members, best first. So the

@@ -163,23 +163,22 @@ proxy-protocol-receive = false
 # member directly still works, which is how someone rejoins the server their
 # base is on.
 #
-# A group can be used anywhere a backend can: "try", forced hosts, /send, and
-# the plugin-message APIs. Group names must not collide with backend names.
+# Usually there is nothing to write here. Backends numbered with a dash or an
+# underscore group themselves: survival-01 and survival-02 are already a group
+# called "survival". Only a separator followed by digits counts, so a name like
+# "pvp-arena" stays one server.
 #
-# Losing a member is what groups are for. A player whose server dies is handed
-# to a sibling in the same group before Relay looks any further down "try".
+# A group is a destination anywhere a backend is: "try" above, forced hosts
+# below, /send, and both plugin-message APIs. Losing a member is the point --
+# a player whose server dies is handed to a sibling before Relay looks any
+# further down "try".
 #
-# To split survival in two, name both backends under [servers] below:
-#
-#   survival-01 = "127.0.0.1:25567"
-#   survival-02 = "127.0.0.1:25568"
-#
-# then group them, and leave try = ["lobby", "survival"] alone -- "survival"
-# now means the group:
+# Write a group out only to say something the naming does not: an odd set, or
+# members that are not numbered. An explicit entry wins over the derived one,
+# and a real backend's name always wins over a group.
 #
 # [groups]
-# survival = ["survival-01", "survival-02"]
-# pvp = ["pvp-01", "pvp-02"]
+# hub = ["lobby", "spawn"]
 
 
 # How a group picks. The choice only ever orders the members -- the preferred
