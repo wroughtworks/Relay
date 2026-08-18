@@ -72,6 +72,10 @@ public final class BackendApiHandler {
                 return false;
             }
             channel = ProtocolUtils.readString(peek, 256);
+            // Logged for every plugin message, not just ours: if a backend's request
+            // never appears here, the clientbound plugin-message id is wrong and the
+            // frame is being relayed to the player instead of being recognised.
+            LOG.debug("Backend {} sent a plugin message on '{}'", server.target().name(), channel);
             if (!BackendApi.isApiChannel(channel)) {
                 return false;
             }
@@ -95,6 +99,7 @@ public final class BackendApiHandler {
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
         String subChannel = in.readUTF();
         ConnectedPlayer player = server.player();
+        LOG.debug("Backend {} requested '{}' on {}", server.target().name(), subChannel, channel);
 
         switch (subChannel) {
             case Sub.CONNECT -> connect(player, in.readUTF());
@@ -267,6 +272,13 @@ public final class BackendApiHandler {
     }
 
     private void reply(String channel, Payload payload) {
+        // The id used here is the serverbound one, since Relay is the client on this
+        // connection. If a backend never sees a reply it asked for, this is the id to
+        // doubt: the request arriving proves only the clientbound id is right.
+        LOG.debug("Replying to {} on {} (serverbound plugin message id 0x{})",
+                server.target().name(), channel,
+                Integer.toHexString(StateRegistry.PLAY.serverbound
+                        .idOf(PluginMessagePacket.class, server.player().version())));
         server.connection().write(new PluginMessagePacket(channel, encode(payload)));
     }
 
