@@ -212,12 +212,29 @@ public final class BackendApiHandler {
      * permission nodes apply identically and a backend gains nothing by routing a command
      * this way rather than letting the player type it.
      */
+    /**
+     * Runs a command a backend forwarded, and says plainly why if it will not.
+     *
+     * <p>Chat-typed commands hide the difference between "no such command" and "not for
+     * you", so a player cannot map out what exists by watching which refusals differ.
+     * Here that reasoning does not apply and actively misleads: the command arrived
+     * because a plugin registered it as a real server command, so it is already in the
+     * player's command tree, tab-completes, and is visibly not a typo. Telling them it
+     * is unknown sends them hunting for a spelling mistake instead of asking for the
+     * permission they actually need.
+     */
     private void runCommand(ConnectedPlayer player, String commandLine) {
         LOG.debug("{} ran '{}' via {}", player.username(), commandLine, server.target().name());
-        if (!proxy.commands().dispatch(player, commandLine)) {
-            // Either no such proxy command, or the player may not use it. Both are
-            // reported the same way so the command's existence is not leaked.
-            player.sendMessage(Component.text("Unknown command: /" + commandLine,
+        String name = commandLine.strip().split("\\s+")[0];
+        switch (proxy.commands().run(player, commandLine)) {
+            case HANDLED -> {
+            }
+            case NO_PERMISSION -> {
+                LOG.debug("{} lacks permission for /{}", player.username(), name);
+                player.sendMessage(Component.text("You do not have permission to use /" + name,
+                        NamedTextColor.RED));
+            }
+            case NO_SUCH_COMMAND -> player.sendMessage(Component.text("Unknown command: /" + name,
                     NamedTextColor.RED));
         }
     }

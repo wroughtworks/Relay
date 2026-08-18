@@ -133,7 +133,7 @@ Notes on what moved and why:
 
 | Packet | 1.20.2 | 1.20.3–1.20.4 | 1.20.5–1.21.1 | 1.21.2–1.21.4 | 1.21.5+ |
 |---|---|---|---|---|---|
-| `disconnect` | `0x1B` | `0x1B` | `0x1D` | `0x1D` | `0x1C` |
+| `disconnect` | `0x1B` ✓ | `0x1B` | `0x1D` | `0x1D` | `0x1C` |
 | `system_chat` | `0x67` ✓ | `0x69` | `0x6B` | `0x72` | `0x73` |
 | `start_configuration` | `0x65` ✓ | `0x67` | `0x69` | `0x70` | `0x71` |
 | `plugin_message` | `0x18` | `0x19` | `0x19` | `0x18` | `0x19` |
@@ -146,6 +146,14 @@ rather than by reading a log. A live 1.20.2 client switched servers with `/serve
 can only happen if `start_configuration` (`0x65`) is the packet the client accepts *and*
 `configuration_acknowledged` (`0x0B`) is the reply Relay recognises. A wrong value for
 either leaves the player stuck on the old backend.
+
+`disconnect` was confirmed the same way, and it is the one entry in this table Relay
+now *reads* rather than only writes. A backend's kick is claimed instead of relayed, so
+that a planned restart moves players rather than ejecting them &mdash; and a live 1.20.2
+Paper server typing `stop` produced exactly that, which it could not have done had the id
+been wrong. See `BackendKickHandler` for how a wrong id degrades: the frame is peeked at
+rather than decoded, rejected unless its body could be a text component, and otherwise
+relayed untouched as before.
 
 One more id worth recording even though Relay does not decode it: Paper's log shows
 `IN: [play:20] ServerboundKeepAlivePacket`, so **Keep Alive is `0x14`** at 1.20.2, not
