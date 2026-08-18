@@ -166,6 +166,17 @@ proxy-protocol-receive = false
 # A group can be used anywhere a backend can: "try", forced hosts, /send, and
 # the plugin-message APIs. Group names must not collide with backend names.
 #
+# Losing a member is what groups are for. A player whose server dies is handed
+# to a sibling in the same group before Relay looks any further down "try".
+#
+# To split survival in two, name both backends under [servers] below:
+#
+#   survival-01 = "127.0.0.1:25567"
+#   survival-02 = "127.0.0.1:25568"
+#
+# then group them, and leave try = ["lobby", "survival"] alone -- "survival"
+# now means the group:
+#
 # [groups]
 # survival = ["survival-01", "survival-02"]
 # pvp = ["pvp-01", "pvp-02"]
@@ -182,6 +193,10 @@ proxy-protocol-receive = false
 #   random           cheap, stateless, even enough over any real number of joins.
 #   first-available  configured order, always. Not balancing: later members
 #                    exist only to catch failures of earlier ones.
+#
+# Ties keep configured order in every strategy. This must stay above the first
+# [table] header: TOML reads a bare key after one as belonging to that table,
+# and it would silently become servers.balance instead.
 balance = "least-players"
 
 
