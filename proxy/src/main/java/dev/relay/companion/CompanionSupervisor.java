@@ -4,6 +4,7 @@ import dev.relay.config.RelayConfig.CompanionEntry;
 import dev.relay.control.ControlServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -65,7 +66,7 @@ public final class CompanionSupervisor {
                 LOG.debug("Companion '{}' is disabled", entry.name());
                 continue;
             }
-            Companion companion = new Companion(entry);
+            Companion companion = new Companion(entry, running.size());
             running.add(companion);
             companion.launch();
         }
@@ -85,12 +86,15 @@ public final class CompanionSupervisor {
     private final class Companion {
 
         private final CompanionEntry entry;
+        /** Its slot in the console palette, so two companions never share a colour. */
+        private final String colourSlot;
         private long backoff = MIN_BACKOFF_MILLIS;
 
         private volatile Process process;
 
-        Companion(CompanionEntry entry) {
+        Companion(CompanionEntry entry, int index) {
             this.entry = entry;
+            this.colourSlot = Integer.toString(index);
         }
 
         void launch() {
@@ -132,7 +136,16 @@ public final class CompanionSupervisor {
                         new InputStreamReader(current.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        LOG.info("[{}] {}", entry.name(), line);
+                        // Through the MDC rather than by colouring the message, so the
+                        // console can tint the line while the log file records it clean.
+                        // Escape codes written into the message would end up in the file
+                        // too, where they are noise nothing strips.
+                        MDC.put(CompanionColour.MDC_KEY, colourSlot);
+                        try {
+                            LOG.info("[{}] {}", entry.name(), line);
+                        } finally {
+                            MDC.remove(CompanionColour.MDC_KEY);
+                        }
                     }
                 } catch (IOException closed) {
                     // The process ended; the exit watcher handles it.

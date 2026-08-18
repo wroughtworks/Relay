@@ -31,7 +31,10 @@ import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -55,6 +58,7 @@ public final class RelayProxy {
     private final PlayerRegistry players = new PlayerRegistry();
     private final ProxyEvents events = new ProxyEvents();
     private HealthChecker healthChecker;
+    private Path pidFile;
     private ControlServer control;
     private CompanionSupervisor companions;
     private final SessionAuthenticator authenticator = new SessionAuthenticator();
@@ -260,6 +264,8 @@ public final class RelayProxy {
         // Last, and after the player listener is already open, so nothing here can stop
         // the proxy doing its actual job. Companions start only once the control channel
         // is bound, since the port and token are handed to them through their environment.
+        writePidFile();
+
         if (config.controlEnabled()) {
             startCompanions();
         } else if (!config.companions().isEmpty()) {
@@ -274,6 +280,34 @@ public final class RelayProxy {
         } else {
             LOG.info("Not sending PROXY protocol headers. A backend with proxies.proxy-protocol: true will "
                     + "accept the connection and then never answer; set proxy-protocol-send = true for those.");
+        }
+    }
+
+    /**
+     * Records this process's id beside the config, and removes it on the way out.
+     *
+     * <p>For the build, which uses it to warn when the jar is being replaced under a
+     * running proxy. That replacement does not fail anything at the time: the JVM has
+     * already loaded what it is using, and it breaks much later, when it first needs a
+     * class it had not loaded yet, as a {@code NoClassDefFoundError} deep inside Netty.
+     * Nothing in that stack trace mentions the jar, so it reads as a Relay bug. It has
+     * cost this project a debugging session twice.
+     *
+     * <p>A file rather than letting the build scan processes: {@code commandLine()} is
+     * empty for other processes on Windows, so a scan silently finds nothing on the one
+     * platform where this project actually runs.
+     */
+    private void writePidFile() {
+        try {
+            Path directory = config.sourcePath().getParent().resolve(".relay-run");
+            Files.createDirectories(directory);
+            pidFile = directory.resolve("relay.pid");
+            Files.writeString(pidFile, Long.toString(ProcessHandle.current().pid()));
+            pidFile.toFile().deleteOnExit();
+        } catch (IOException e) {
+            // A convenience for tooling, not something to refuse to start over.
+            LOG.debug("Could not write the pid file", e);
+            pidFile = null;
         }
     }
 
@@ -326,6 +360,13 @@ public final class RelayProxy {
             return;
         }
         LOG.info("Shutting down");
+        if (pidFile != null) {
+            try {
+                Files.deleteIfExists(pidFile);
+            } catch (IOException ignored) {
+                // deleteOnExit is the backstop.
+            }
+        }
         // Companions are told over the control channel and given a moment, before the
         // channel itself closes underneath them.
         if (companions != null) {

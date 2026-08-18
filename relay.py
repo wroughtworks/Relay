@@ -335,17 +335,27 @@ def _parse_cim_date(value) -> float | None:
         return None
 
 
+# Companions are Relay processes too, and live under the same directory, so a
+# path match finds them. They must not be treated as proxies: killing one
+# directly skips the goodbye the proxy sends over the control channel, and the
+# supervisor would simply start it again a second later.
+COMPANION_MARKERS = ("relay-dashboard", "relay-discord")
+
+
 def relay_processes() -> list[Process]:
     """
-    Java processes running the Relay jar.
+    Java processes running the Relay proxy jar.
 
-    Matched narrowly on purpose: the Gradle daemon and the Paper server are also
-    java processes, and killing either would be a bad surprise.
+    Matched narrowly on purpose: the Gradle daemon, the Paper servers and the
+    proxy's own companions are all java processes under this directory, and
+    stopping any of them here would be a bad surprise.
     """
     found = []
     for process in running_processes():
         command = process.command.lower()
         if "gradle" in command or "server.jar" in command:
+            continue
+        if any(marker in command for marker in COMPANION_MARKERS):
             continue
         # Matched on the path rather than the jar name: the artifact has been called
         # both relay-*.jar and proxy-*.jar, and a name-only match silently stopped
@@ -1383,6 +1393,14 @@ def cmd_unlink(args) -> int:
     return 0
 
 
+def companion_processes() -> list[Process]:
+    """Companion processes the proxy started, matched by their jar names."""
+    return [
+        process for process in running_processes()
+        if any(marker in process.command.lower() for marker in COMPANION_MARKERS)
+    ]
+
+
 def cmd_stop(args) -> int:
     processes = relay_processes()
     if not processes:
@@ -1394,7 +1412,18 @@ def cmd_stop(args) -> int:
         if not kill(process.pid):
             print(Style.red(f"  could not terminate {process.pid}"))
             return 1
+
+    # Companions are stopped here too. On Windows kill() is taskkill /F, which skips
+    # the proxy's shutdown hook entirely -- so the goodbye that would normally tell
+    # companions to exit never goes out, and they are left holding their ports. The
+    # next dashboard then fails to bind, which looks like a broken dashboard rather
+    # than an orphan from the run before.
     time.sleep(0.6)
+    orphans = companion_processes()
+    for process in orphans:
+        print(f"Stopping companion PID {process.pid}")
+        kill(process.pid)
+
     print(Style.green("Stopped."))
     return 0
 

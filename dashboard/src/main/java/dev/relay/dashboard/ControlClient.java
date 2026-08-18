@@ -31,18 +31,31 @@ import java.util.function.Consumer;
  * the reason the dashboard is a separate process at all is to keep Jetty out of the proxy,
  * and a channel back that needed its own web server would have undone that.
  *
- * <h2>Reconnecting</h2>
- * The proxy can restart underneath this process. Rather than exiting, the client retries
- * with a backoff, so a proxy restart shows as a dashboard that is briefly stale rather
- * than one an operator has to go and start again. The exception is {@code goodbye}, which
- * says the proxy is stopping on purpose &mdash; that is a reason to exit, not to retry.
+ * <h2>Reconnecting, and then giving up</h2>
+ * A brief drop is worth riding out: the proxy may be restarting, and a dashboard that
+ * exits on a hiccup is one an operator has to go and start again. So the client retries
+ * with a backoff &mdash; but only for a bounded time, and then it exits.
+ *
+ * <p>Giving up matters more than it sounds. A companion is owned by exactly one proxy,
+ * and on Windows a proxy that is force-killed never runs its shutdown hook, so nothing
+ * tells this process to stop. Retrying forever would leave it holding its port, and the
+ * next proxy's dashboard would fail to bind &mdash; which presents as a dashboard that
+ * mysteriously will not start, with the real cause an orphan from the previous run.
  */
 final class ControlClient implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControlClient.class);
 
     private static final long MIN_BACKOFF_MILLIS = 500;
-    private static final long MAX_BACKOFF_MILLIS = 10_000;
+    private static final long MAX_BACKOFF_MILLIS = 5000;
+
+    /**
+     * How long to keep trying before concluding the proxy is not coming back.
+     *
+     * <p>Long enough to cover a restart, short enough that an orphan does not sit on its
+     * port while someone wonders why the new dashboard will not start.
+     */
+    private static final long GIVE_UP_AFTER_MILLIS = 30_000;
 
     /** A query the proxy has not answered in this long is not going to be. */
     private static final long QUERY_TIMEOUT_MILLIS = 5000;
@@ -82,12 +95,24 @@ final class ControlClient implements AutoCloseable {
 
     private void run() {
         long backoff = MIN_BACKOFF_MILLIS;
+        long unreachableSince = 0;
         while (!closed) {
             try {
                 session();
                 backoff = MIN_BACKOFF_MILLIS;
+                unreachableSince = 0;
             } catch (IOException e) {
                 if (closed) {
+                    return;
+                }
+                if (unreachableSince == 0) {
+                    unreachableSince = System.currentTimeMillis();
+                }
+                if (System.currentTimeMillis() - unreachableSince > GIVE_UP_AFTER_MILLIS) {
+                    LOG.error("The proxy has been unreachable for over {}s; exiting rather than "
+                                    + "holding this port against the next one",
+                            GIVE_UP_AFTER_MILLIS / 1000);
+                    onGoodbye.run();
                     return;
                 }
                 LOG.warn("Control connection to {}:{} failed ({}); retrying in {}ms",
