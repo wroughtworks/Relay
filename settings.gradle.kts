@@ -31,6 +31,10 @@ dependencyResolutionManagement {
             library("nightconfig-toml", "com.electronwill.night-config", "toml").version("3.8.1")
             library("gson", "com.google.code.gson", "gson").version("2.11.0")
 
+            // Javalin brings Jetty with it. Gson is already here for components, so the
+            // dashboard serialises with that rather than adding Jackson for one job.
+            library("javalin", "io.javalin", "javalin").version("6.3.0")
+
             library("slf4j-api", "org.slf4j", "slf4j-api").versionRef("slf4j")
             library("logback", "ch.qos.logback", "logback-classic").version("1.5.12")
 

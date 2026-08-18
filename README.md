@@ -13,7 +13,7 @@ those are phases 2 and 3.
 | Phase | Scope | State |
 |---|---|---|
 | 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins, plays, and switches servers |
-| 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | Not started |
+| 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | **Read-only API working**; frontend, auth and the acting half not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
@@ -45,6 +45,8 @@ commands that reach the proxy by plugin message. See
 - **Client API**: a plugin-message protocol for client-side mods —
   see [docs/client-api.md](docs/client-api.md)
 - **Operations**: backpressure both directions, bounded buffers, graceful shutdown
+- **Dashboard API**: read-only REST plus a live WebSocket, off by default —
+  see [Dashboard API](#dashboard-api)
 
 ## Requirements
 
@@ -197,6 +199,38 @@ whatever came next in the try list.
 | `first-available` | configured order, always. Not balancing: later members exist only to catch failures of earlier ones |
 
 Ties keep configured order in every strategy, so an empty network still fills predictably.
+
+## Dashboard API
+
+Phase 2's read-only half. Off by default; when on it binds to loopback:
+
+```toml
+[dashboard]
+enabled = true
+bind = "127.0.0.1:8080"
+```
+
+| | |
+|---|---|
+| `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
+| `GET /api/servers` | each backend, its address, player count, and group |
+| `GET /api/groups` | each group, its members, and its total |
+| `GET /api/players` | who is online and which backend they are on |
+| `WS /api/events` | one socket carrying every event type |
+
+Events arrive as `{type, player, from, to}`, with `type` one of `PLAYER_CONNECTED`,
+`PLAYER_DISCONNECTED`, `PLAYER_SWITCHED_SERVER`. One socket multiplexes them all, per
+spec §9.4 — a socket per type would multiply connections by the number of things worth
+watching.
+
+**Read-only is the boundary, not a stage.** Nothing here moves a player, closes a
+connection or edits config, which is what makes it reasonable to run before spec §9.6's
+authentication exists. For the same reason player records carry **no IP address**: saying
+who is online is one thing, pairing usernames with home addresses on an unauthenticated
+port is another. Addresses arrive with the login that guards them.
+
+Relay warns at startup if you bind it anywhere but loopback. Until there is auth, reach
+it over an SSH tunnel.
 
 ## Configuring backends
 

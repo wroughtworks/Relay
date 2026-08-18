@@ -220,6 +220,7 @@ public final class BackendConnector {
         }
         if (proxy.players().byUuid(player.uuid()).orElse(null) == player) {
             proxy.players().remove(player);
+            proxy.events().playerDisconnected(player, player.lastArrival());
             // The duration separates a clean quit from a session that died on its first
             // seconds of play traffic -- the two are otherwise the same log line.
             LOG.info("{} disconnected after {}s", player.username(),

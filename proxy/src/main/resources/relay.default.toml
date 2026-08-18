@@ -199,6 +199,29 @@ proxy-protocol-receive = false
 balance = "least-players"
 
 
+# ---------------------------------------------------------------- dashboard
+#
+# A read-only HTTP API and a WebSocket carrying live events, for the web
+# dashboard. Nothing it serves can change anything: no request moves a player,
+# closes a connection, or edits config.
+#
+#   GET  /api/overview   players, uptime, backend and group counts
+#   GET  /api/servers    each backend, its address, players, and group
+#   GET  /api/groups     each group, its members, and its total
+#   GET  /api/players    who is online and where
+#   WS   /api/events     one socket, every event type
+#
+# Off by default, and bound to loopback when on. It says who is online and
+# which server they are on, and it has no authentication yet -- that arrives
+# with the half of the dashboard that can act. Until then, reach it over an SSH
+# tunnel rather than binding it to a public address; Relay warns at startup if
+# you do.
+
+[dashboard]
+enabled = false
+bind = "127.0.0.1:8080"
+
+
 # ----------------------------------------------------------------- backends
 
 [servers]

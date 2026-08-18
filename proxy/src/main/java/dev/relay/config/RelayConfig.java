@@ -35,6 +35,8 @@ public record RelayConfig(
         boolean clientApiEnabled,
         boolean backendApiEnabled,
         boolean traceCloses,
+        boolean dashboardEnabled,
+        InetSocketAddress dashboardBind,
         Map<String, ServerEntry> servers,
         Map<String, List<String>> groups,
         BalanceStrategy balance,

@@ -134,6 +134,12 @@ public final class ConfigLoader {
         // to switch on.
         boolean traceCloses = config.getOrElse("trace-closes", Boolean.TRUE);
 
+        // Off by default. It serves who is online and where, which is not something to
+        // start publishing on an upgrade without the operator asking for it.
+        boolean dashboardEnabled = config.getOrElse("dashboard.enabled", Boolean.FALSE);
+        InetSocketAddress dashboardBind = parseAddress(
+                config.getOrElse("dashboard.bind", "127.0.0.1:8080"), "dashboard.bind");
+
         Map<String, ServerEntry> servers = parseServers(config);
         if (servers.isEmpty()) {
             throw new IllegalArgumentException("No backends defined; add at least one entry under [servers]");
@@ -159,6 +165,7 @@ public final class ConfigLoader {
                 bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
+                dashboardEnabled, dashboardBind,
                 servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }
 

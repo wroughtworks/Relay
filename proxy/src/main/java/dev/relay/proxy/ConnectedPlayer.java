@@ -39,6 +39,16 @@ public final class ConnectedPlayer {
     private long lastFallbackAt;
     private int consecutiveFallbacks;
 
+    /**
+     * The last backend this player actually entered play on.
+     *
+     * <p>Distinct from {@link #connectedServer()}, which is null for the length of a
+     * switch. Something has to remember where they came from across that gap, or an
+     * arrival cannot be told from a first join and a disconnect cannot say where it
+     * happened.
+     */
+    private volatile RegisteredServer lastArrival;
+
     public ConnectedPlayer(MinecraftConnection connection, GameProfile profile, ProtocolVersion version,
                            String virtualHost) {
         this.connection = connection;
@@ -156,6 +166,14 @@ public final class ConnectedPlayer {
         consecutiveFallbacks = now - lastFallbackAt <= windowMillis ? consecutiveFallbacks + 1 : 1;
         lastFallbackAt = now;
         return consecutiveFallbacks;
+    }
+
+    public RegisteredServer lastArrival() {
+        return lastArrival;
+    }
+
+    public void setLastArrival(RegisteredServer server) {
+        this.lastArrival = server;
     }
 
     public boolean isActive() {

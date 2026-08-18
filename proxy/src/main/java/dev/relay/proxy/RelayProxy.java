@@ -6,6 +6,7 @@ import dev.relay.config.ForwardingMode;
 import dev.relay.config.RelayConfig;
 import dev.relay.config.RelayConfig.ProtocolOverride;
 import dev.relay.config.RelayConfig.ServerEntry;
+import dev.relay.dashboard.DashboardServer;
 import dev.relay.net.ConnectionInitializer;
 import dev.relay.net.Encryption;
 import dev.relay.net.MinecraftConnection;
@@ -50,6 +51,8 @@ public final class RelayProxy {
     private final Map<String, RegisteredServer> servers = new LinkedHashMap<>();
     private final Map<String, ServerGroup> groups = new LinkedHashMap<>();
     private final PlayerRegistry players = new PlayerRegistry();
+    private final ProxyEvents events = new ProxyEvents();
+    private DashboardServer dashboard;
     private final SessionAuthenticator authenticator = new SessionAuthenticator();
     private final CommandManager commands;
     private final KeyPair keyPair;
@@ -89,6 +92,10 @@ public final class RelayProxy {
 
     public PlayerRegistry players() {
         return players;
+    }
+
+    public ProxyEvents events() {
+        return events;
     }
 
     public CommandManager commands() {
@@ -241,6 +248,13 @@ public final class RelayProxy {
             LOG.info("Balancing  {}", config.balance().configName());
         }
 
+        // Last, so a dashboard failure cannot stop the listener that matters from
+        // already being open.
+        if (config.dashboardEnabled()) {
+            dashboard = new DashboardServer(this);
+            dashboard.start();
+        }
+
         if (config.proxyProtocolSend()) {
             LOG.info("Sending PROXY protocol headers to backends. Each backend must accept them "
                     + "(proxies.proxy-protocol: true in paper-global.yml), or it will reject the connection.");
@@ -256,6 +270,9 @@ public final class RelayProxy {
             return;
         }
         LOG.info("Shutting down");
+        if (dashboard != null) {
+            dashboard.stop();
+        }
         for (ConnectedPlayer player : players.snapshot()) {
             player.disconnect(Component.text("Proxy is restarting"));
         }

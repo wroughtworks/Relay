@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.bundles.adventure)
     implementation(libs.nightconfig.toml)
     implementation(libs.gson)
+    implementation(libs.javalin)
     implementation(libs.slf4j.api)
     runtimeOnly(libs.logback)
 
