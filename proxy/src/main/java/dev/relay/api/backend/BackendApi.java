@@ -79,6 +79,20 @@ public final class BackendApi {
         /** Relay an opaque payload to whichever server a named player is on. */
         public static final String FORWARD_TO_PLAYER = "ForwardToPlayer";
 
+        /**
+         * Run a proxy command as the sending player.
+         *
+         * <p>Relay's own, and the reason there is no sub-channel per command: a backend
+         * plugin can register {@code /server}, {@code /glist} and the rest as real server
+         * commands -- with tab completion and a proper command tree -- and forward the
+         * line here. Commands added to the proxy later work through it unchanged.
+         *
+         * <p>Permissions are still decided by the proxy, against the same nodes that
+         * guard the commands when typed in chat, so a backend cannot use this to escape
+         * them.
+         */
+        public static final String RUN_COMMAND = "RunCommand";
+
         private Sub() {
         }
     }

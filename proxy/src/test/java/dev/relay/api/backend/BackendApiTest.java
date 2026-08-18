@@ -100,6 +100,26 @@ class BackendApiTest {
         org.junit.jupiter.api.Assertions.fail("Relay never registered its channels with the backend");
     }
 
+    /**
+     * A command forwarded from a backend runs against the proxy's own permission nodes,
+     * so routing it this way grants nothing the player could not do by typing it.
+     */
+    @Test
+    void runCommandIsRefusedWithoutThePermission(@TempDir Path dir) throws Exception {
+        Client client = join(dir, "");
+        try {
+            sendApiRequest(BackendApi.RELAY_CHANNEL, out -> {
+                out.writeUTF("RunCommand");
+                out.writeUTF("glist");
+            });
+            // With no permission the proxy declines, and says so on the player's
+            // connection rather than replying on the API channel.
+            assertTrue(awaitPlayerMessage(client), "the player should have been told");
+        } finally {
+            client.socket().close();
+        }
+    }
+
     @Test
     void getServerNamesTheBackend(@TempDir Path dir) throws Exception {
         DataInputStream reply = exchange(dir, out -> out.writeUTF("GetServer"));
@@ -229,6 +249,21 @@ class BackendApiTest {
     }
 
     private void sendApiRequest(Request request) throws IOException {
+        sendApiRequest(BackendApi.BUNGEE_CHANNEL, request);
+    }
+
+    /** True once any frame reaches the player, which is how a refusal is delivered. */
+    private boolean awaitPlayerMessage(Client client) {
+        try {
+            client.socket().setSoTimeout(5000);
+            readFrame(client.socket().getInputStream()).release();
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private void sendApiRequest(String channel, Request request) throws IOException {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         try (DataOutputStream data = new DataOutputStream(body)) {
             request.write(data);
@@ -236,7 +271,7 @@ class BackendApiTest {
 
         ByteBuf packet = Unpooled.buffer();
         ProtocolUtils.writeVarInt(packet, CB_PLAY_PLUGIN_MESSAGE);
-        ProtocolUtils.writeString(packet, BackendApi.BUNGEE_CHANNEL);
+        ProtocolUtils.writeString(packet, channel);
         packet.writeBytes(body.toByteArray());
         writeFrame(backendConnection.getOutputStream(), packet);
         backendConnection.getOutputStream().flush();
@@ -267,6 +302,10 @@ class BackendApiTest {
 
     /** Starts the proxy and a fake backend, and takes a player through to play state. */
     private Client join(Path dir) throws Exception {
+        return join(dir, "relay.command.glist");
+    }
+
+    private Client join(Path dir, String permission) throws Exception {
         backend = new ServerSocket();
         backend.bind(new InetSocketAddress("127.0.0.1", 0));
 
@@ -318,7 +357,11 @@ class BackendApiTest {
                 [servers]
                 lobby = "127.0.0.1:%d"
                 survival = "127.0.0.1:1"
-                """.formatted(port, backend.getLocalPort()));
+
+                [permissions]
+                default = [%s]
+                """.formatted(port, backend.getLocalPort(),
+                permission.isEmpty() ? "" : "\"" + permission + "\""));
 
         proxy = new RelayProxy(ConfigLoader.load(dir.resolve("relay.toml")));
         proxy.start();

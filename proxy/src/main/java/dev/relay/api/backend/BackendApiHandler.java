@@ -181,6 +181,7 @@ public final class BackendApiHandler {
                     out.writeUTF(other.uuid().toString().replace("-", ""));
                 }));
             }
+            case Sub.RUN_COMMAND -> runCommand(player, in.readUTF());
             case Sub.FORWARD -> forward(channel, in.readUTF(), in);
             case Sub.FORWARD_TO_PLAYER -> {
                 String target = in.readUTF();
@@ -190,6 +191,23 @@ public final class BackendApiHandler {
             }
             default -> LOG.debug("Backend {} used an unknown sub-channel '{}'",
                     server.target().name(), subChannel);
+        }
+    }
+
+    /**
+     * Runs a proxy command on behalf of the player who sent it.
+     *
+     * <p>Dispatched through the same {@code CommandManager} as a typed command, so the
+     * permission nodes apply identically and a backend gains nothing by routing a command
+     * this way rather than letting the player type it.
+     */
+    private void runCommand(ConnectedPlayer player, String commandLine) {
+        LOG.debug("{} ran '{}' via {}", player.username(), commandLine, server.target().name());
+        if (!proxy.commands().dispatch(player, commandLine)) {
+            // Either no such proxy command, or the player may not use it. Both are
+            // reported the same way so the command's existence is not leaked.
+            player.sendMessage(Component.text("Unknown command: /" + commandLine,
+                    NamedTextColor.RED));
         }
     }
 

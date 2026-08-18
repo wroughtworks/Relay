@@ -6,7 +6,26 @@ author: Relay
 description: The backend-side companion to the Relay proxy.
 load: POSTWORLD
 
+# The proxy's commands, registered here so they appear in the client's command
+# tree and tab-complete. Each is forwarded to the proxy verbatim; the proxy
+# decides who may run it, using the same permission nodes as a typed command.
+# Bukkit permissions are therefore left open -- gating them here as well would
+# mean maintaining the same rule in two places, and the proxy is the one that
+# knows about players on other backends.
 commands:
+  server:
+    description: Move to another backend, or list them.
+    usage: /server [name]
+    aliases: [proxyserver]
+  glist:
+    description: Who is online, grouped by backend.
+    usage: /glist
+  find:
+    description: Which backend a player is on.
+    usage: /find <player>
+  send:
+    description: Move other players between backends.
+    usage: /send <player|all|server:<name>> <target>
   relay:
     description: Talk to the proxy over the backend API.
     usage: /relay [probe|connect <server>|forward <text>]
@@ -15,5 +34,5 @@ commands:
 
 permissions:
   relay.admin:
-    description: Use /relay.
+    description: Use /relay, which drives the backend API directly.
     default: op

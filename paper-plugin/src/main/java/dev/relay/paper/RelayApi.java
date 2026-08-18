@@ -125,6 +125,22 @@ public final class RelayApi {
         });
     }
 
+    /**
+     * Runs a proxy command as {@code player}.
+     *
+     * <p>Sent on Relay's own channel rather than the BungeeCord one, since BungeeCord
+     * never had this. The proxy applies the same permission nodes as it would to a typed
+     * command, so this grants nothing the player could not do themselves.
+     *
+     * @param commandLine the command without its leading slash
+     */
+    public void runCommand(Player player, String commandLine) {
+        sendOn(player, RELAY_CHANNEL, out -> {
+            out.writeUTF("RunCommand");
+            out.writeUTF(commandLine);
+        });
+    }
+
     /** Asks for the carrier's real address as the proxy sees it. Replies on {@code IP}. */
     public void requestAddress(Player carrier) {
         send(carrier, out -> out.writeUTF("IP"));
@@ -166,6 +182,10 @@ public final class RelayApi {
      * consumed by the proxy, never reaching their client.
      */
     private void send(Player carrier, Writer body) {
+        sendOn(carrier, CHANNEL, body);
+    }
+
+    private void sendOn(Player carrier, String channel, Writer body) {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bytes)) {
             body.write(out);
@@ -173,7 +193,7 @@ public final class RelayApi {
             // A ByteArrayOutputStream cannot fail.
             throw new IllegalStateException("failed to encode a Relay API request", e);
         }
-        carrier.sendPluginMessage(plugin, CHANNEL, bytes.toByteArray());
+        carrier.sendPluginMessage(plugin, channel, bytes.toByteArray());
     }
 
     /**

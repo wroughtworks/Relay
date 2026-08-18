@@ -6,6 +6,7 @@ import org.bukkit.plugin.messaging.PluginMessageListener;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -27,6 +28,7 @@ final class BackendApiProbe implements PluginMessageListener {
     private final RelayPlugin plugin;
     private final RelayApi api;
     private final Set<String> outstanding = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final List<String> servers = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     BackendApiProbe(RelayPlugin plugin) {
         this.plugin = plugin;
@@ -34,10 +36,15 @@ final class BackendApiProbe implements PluginMessageListener {
     }
 
     void register() {
-        plugin.getServer().getMessenger()
-                .registerOutgoingPluginChannel(plugin, RelayApi.CHANNEL);
-        plugin.getServer().getMessenger()
-                .registerIncomingPluginChannel(plugin, RelayApi.CHANNEL, this);
+        for (String channel : new String[]{RelayApi.CHANNEL, RelayApi.RELAY_CHANNEL}) {
+            plugin.getServer().getMessenger().registerOutgoingPluginChannel(plugin, channel);
+            plugin.getServer().getMessenger().registerIncomingPluginChannel(plugin, channel, this);
+        }
+    }
+
+    /** The backends the proxy last reported, for tab completion. */
+    List<String> knownServers() {
+        return List.copyOf(servers);
     }
 
     /** Sends every read-only request, then reports which ones were answered. */
@@ -97,7 +104,16 @@ final class BackendApiProbe implements PluginMessageListener {
             switch (subChannel) {
                 case "GetServer" -> plugin.report("  GetServer   -> this server is '"
                         + in.readUTF() + "' to the proxy");
-                case "GetServers" -> plugin.report("  GetServers  -> " + in.readUTF());
+                case "GetServers" -> {
+                    String names = in.readUTF();
+                    servers.clear();
+                    for (String name : names.split(",")) {
+                        if (!name.isBlank()) {
+                            servers.add(name.trim());
+                        }
+                    }
+                    plugin.report("  GetServers  -> " + names);
+                }
                 case "PlayerCount" -> {
                     String scope = in.readUTF();
                     plugin.report("  PlayerCount -> " + in.readInt() + " on " + scope);

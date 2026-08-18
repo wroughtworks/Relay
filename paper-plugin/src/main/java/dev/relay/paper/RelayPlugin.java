@@ -37,6 +37,15 @@ public final class RelayPlugin extends JavaPlugin {
                 new DisconnectListener(this, inspector, probe, getConfig().getBoolean("probe-on-join", true)), this);
         getCommand("relay").setExecutor(new RelayCommand(this, probe));
 
+        // The proxy's own commands, forwarded verbatim. Registering them here is what
+        // gives them tab completion and a place in the client's command tree; chat
+        // interception alone leaves them looking like unknown commands.
+        ProxyCommand proxyCommand = new ProxyCommand(this, probe);
+        for (String name : new String[]{"server", "glist", "find", "send"}) {
+            getCommand(name).setExecutor(proxyCommand);
+            getCommand(name).setTabCompleter(proxyCommand);
+        }
+
         getLogger().info("Watching player connections for unexplained closes.");
         if (logPackets) {
             getLogger().warning("log-packets is on: this is extremely verbose, for short "

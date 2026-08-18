@@ -279,6 +279,8 @@ def fingerprint(secret: str) -> str:
 class Process:
     pid: int
     command: str
+    #: Unix timestamp the process started, or None where it could not be read.
+    started: float | None = None
 
 
 def running_processes() -> list[Process]:
@@ -287,7 +289,7 @@ def running_processes() -> list[Process]:
             [
                 "powershell", "-NoProfile", "-NonInteractive", "-Command",
                 "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
-                "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+                "Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress",
             ],
             capture_output=True, text=True,
         )
@@ -300,7 +302,8 @@ def running_processes() -> list[Process]:
         if isinstance(data, dict):
             data = [data]
         return [
-            Process(int(item["ProcessId"]), item.get("CommandLine") or "")
+            Process(int(item["ProcessId"]), item.get("CommandLine") or "",
+                    _parse_cim_date(item.get("CreationDate")))
             for item in data if item.get("ProcessId")
         ]
 
@@ -311,6 +314,25 @@ def running_processes() -> list[Process]:
         if pid.isdigit():
             processes.append(Process(int(pid), command))
     return processes
+
+
+def _parse_cim_date(value) -> float | None:
+    """
+    Turns a WMI CreationDate into a timestamp.
+
+    PowerShell renders it either as a WMI string (``20260818010348.123456+000``) or,
+    once it has been through ConvertTo-Json, as ``/Date(1755478000000)/``.
+    """
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith("/Date("):
+        digits = text[6:].split(")")[0].split("+")[0].split("-")[0]
+        return int(digits) / 1000 if digits.lstrip("-").isdigit() else None
+    try:
+        return time.mktime(time.strptime(text[:14], "%Y%m%d%H%M%S"))
+    except ValueError:
+        return None
 
 
 def relay_processes() -> list[Process]:
@@ -1438,6 +1460,16 @@ def cmd_status(args) -> int:
         age = time.strftime("%Y-%m-%d %H:%M", time.localtime(jar.stat().st_mtime))
         stale = Style.yellow(" (older than sources)") if jar_is_stale() else ""
         print(f"jar  {jar.name}  built {age}{stale}")
+
+        # A jar rebuilt under a running proxy leaves it unable to load classes it has
+        # not touched yet, which surfaces much later as a NoClassDefFoundError deep in
+        # Netty and reads like a proxy bug rather than a stale process.
+        for process in processes:
+            if process.started and process.started < jar.stat().st_mtime:
+                print(Style.yellow("     this process started before that jar was built, so it is "
+                                   "running stale code"))
+                print(Style.dim("     restart it: py relay.py stop, then run/up"))
+                break
     else:
         print("jar  not built")
 
