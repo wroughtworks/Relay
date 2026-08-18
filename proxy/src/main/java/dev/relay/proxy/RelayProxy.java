@@ -6,11 +6,12 @@ import dev.relay.config.ForwardingMode;
 import dev.relay.config.RelayConfig;
 import dev.relay.config.RelayConfig.ProtocolOverride;
 import dev.relay.config.RelayConfig.ServerEntry;
-import dev.relay.dashboard.DashboardServer;
 import dev.relay.net.ConnectionInitializer;
 import dev.relay.net.Encryption;
 import dev.relay.net.MinecraftConnection;
 import dev.relay.net.Transport;
+import dev.relay.companion.CompanionSupervisor;
+import dev.relay.control.ControlServer;
 import dev.relay.forwarding.ModernForwarding;
 import dev.relay.health.HealthChecker;
 import dev.relay.protocol.PacketDirection;
@@ -53,8 +54,9 @@ public final class RelayProxy {
     private final Map<String, ServerGroup> groups = new LinkedHashMap<>();
     private final PlayerRegistry players = new PlayerRegistry();
     private final ProxyEvents events = new ProxyEvents();
-    private DashboardServer dashboard;
     private HealthChecker healthChecker;
+    private ControlServer control;
+    private CompanionSupervisor companions;
     private final SessionAuthenticator authenticator = new SessionAuthenticator();
     private final CommandManager commands;
     private final KeyPair keyPair;
@@ -255,11 +257,15 @@ public final class RelayProxy {
             healthChecker.start();
         }
 
-        // Last, so a dashboard failure cannot stop the listener that matters from
-        // already being open.
-        if (config.dashboardEnabled()) {
-            dashboard = new DashboardServer(this);
-            dashboard.start();
+        // Last, and after the player listener is already open, so nothing here can stop
+        // the proxy doing its actual job. Companions start only once the control channel
+        // is bound, since the port and token are handed to them through their environment.
+        if (config.controlEnabled()) {
+            startCompanions();
+        } else if (!config.companions().isEmpty()) {
+            LOG.warn("{} companion(s) are configured but control.enabled is false. They have no way "
+                            + "to reach the proxy, so none will be started.",
+                    config.companions().size());
         }
 
         if (config.proxyProtocolSend()) {
@@ -271,14 +277,62 @@ public final class RelayProxy {
         }
     }
 
+    /**
+     * Opens the control channel and starts whatever is configured to talk on it.
+     *
+     * <p>A failure here is logged and left there. The dashboard not coming up is a
+     * nuisance; a proxy that refuses to serve players because its status page would not
+     * start has its priorities backwards.
+     */
+    private void startCompanions() {
+        try {
+            control = new ControlServer(this);
+            control.start(workerGroup, config.controlBind());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        } catch (Exception e) {
+            // Exception, not RuntimeException. A port already in use surfaces as a
+            // BindException, which Netty rethrows unchecked from sync() -- so it is a
+            // checked exception arriving where the compiler cannot see it, and catching
+            // only RuntimeException let it escape and abort startup. The proxy would
+            // then refuse to serve players because its status page could not bind.
+            LOG.error("The control channel could not be opened on {}: {}. Companions will not start, "
+                            + "and the proxy continues without them.",
+                    config.controlBind(), e.toString());
+            control = null;
+            return;
+        }
+        if (!config.companions().isEmpty()) {
+            companions = new CompanionSupervisor(config.companions(), control,
+                    config.sourcePath().getParent());
+            companions.start();
+        }
+    }
+
+    /** @return the control channel, or {@code null} if it is disabled or failed to open */
+    public ControlServer control() {
+        return control;
+    }
+
+    /** The transport in use, for anything that needs to open a listener of its own. */
+    public Transport transport() {
+        return transport;
+    }
+
     /** Idempotent: the shutdown hook and an explicit {@code stop} both land here. */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
             return;
         }
         LOG.info("Shutting down");
-        if (dashboard != null) {
-            dashboard.stop();
+        // Companions are told over the control channel and given a moment, before the
+        // channel itself closes underneath them.
+        if (companions != null) {
+            companions.stop();
+        }
+        if (control != null) {
+            control.stop();
         }
         if (healthChecker != null) {
             healthChecker.stop();

@@ -339,6 +339,7 @@ class PlayTrafficTest {
                 online-mode = false
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = %d
 
                 [servers]

@@ -207,12 +207,26 @@ Ties keep configured order in every strategy, so an empty network still fills pr
 
 ## Dashboard API
 
-Phase 2's read-only half. Off by default; when on it binds to loopback:
+Phase 2's read-only half, served by the `relay-dashboard` companion process rather than
+by the proxy:
 
 ```toml
-[dashboard]
+[control]
 enabled = true
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:25580"
+
+[companions.dashboard]
+command = ["java", "-jar", "companions/relay-dashboard.jar"]
+
+[companions.dashboard.environment]
+RELAY_DASHBOARD_PORT = "8080"
+```
+
+It can also be run by hand against a running proxy, which is what makes it debuggable —
+copy the control token from the proxy's startup log:
+
+```bash
+RELAY_CONTROL_PORT=25580 RELAY_CONTROL_TOKEN=... java -jar relay-dashboard.jar
 ```
 
 Open `http://127.0.0.1:8080` for the page itself — live tiles, backends, groups, players
@@ -336,11 +350,28 @@ backend-database problem. Relay moves connections and nothing else.
 
 ```
 relay/
-├── proxy/          the proxy itself (Java 21)
+├── proxy/          the proxy itself (Java 21) — Netty and nothing web-facing
+├── dashboard/      the web dashboard, its own process and its own jar (Java 21)
 ├── paper-plugin/   Relay, the backend-side plugin (Java 17)
 ├── docs/           protocol ids, backend and client APIs
 └── relay.py        development helper
 ```
+
+### Why the dashboard is a separate process
+
+Its dependencies — Jetty, Javalin, and the Kotlin runtime Javalin is written in — come to
+about 4.6 MB. Relay's own compiled code is about 0.2 MB. None of that belongs in the
+process carrying player traffic, where a leak or a crash costs players their session
+rather than an operator a page refresh. A Discord bot would be worse: JDA brings a second
+HTTP and WebSocket stack that would eventually meet Netty.
+
+So the proxy opens a **control channel** — newline-delimited JSON on loopback, gated by a
+token regenerated at every start and handed to companions through their environment — and
+Relay starts, supervises and restarts whatever is listed under `[companions]`. Their
+output folds into the proxy's log, so one command still starts everything.
+
+The channel is deliberately the smallest thing that could work. Moving the dashboard out
+would have bought nothing if the way back had needed its own web server.
 
 ### The Relay plugin
 

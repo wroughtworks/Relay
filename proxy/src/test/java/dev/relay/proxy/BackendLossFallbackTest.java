@@ -308,6 +308,7 @@ class BackendLossFallbackTest {
                 online-mode = false
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = -1
                 balance = "first-available"
                 try = ["survival"]
@@ -369,6 +370,7 @@ class BackendLossFallbackTest {
                 online-mode = false
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = -1
                 try = [%s]
 

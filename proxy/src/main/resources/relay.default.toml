@@ -221,27 +221,52 @@ timeout = 3000
 failures-before-down = 3
 
 
-# ---------------------------------------------------------------- dashboard
+# ------------------------------------------------------------------ control
 #
-# A read-only HTTP API and a WebSocket carrying live events, for the web
-# dashboard. Nothing it serves can change anything: no request moves a player,
-# closes a connection, or edits config.
+# The private channel companion processes use to watch and question the proxy:
+# newline-delimited JSON on loopback, gated by a token generated fresh at every
+# start and handed to companions through their environment.
 #
-#   GET  /api/overview   players, uptime, backend and group counts
-#   GET  /api/servers    each backend, its address, players, and group
-#   GET  /api/groups     each group, its members, and its total
-#   GET  /api/players    who is online and where
-#   WS   /api/events     one socket, every event type
-#
-# Off by default, and bound to loopback when on. It says who is online and
-# which server they are on, and it has no authentication yet -- that arrives
-# with the half of the dashboard that can act. Until then, reach it over an SSH
-# tunnel rather than binding it to a public address; Relay warns at startup if
-# you do.
+# It publishes nothing on its own and answers nobody without the token. Turn it
+# off and no companion can start, because none of them would have any way to
+# reach the proxy.
 
-[dashboard]
-enabled = false
-bind = "127.0.0.1:8080"
+[control]
+enabled = true
+bind = "127.0.0.1:25580"
+
+
+# --------------------------------------------------------------- companions
+#
+# Programs Relay starts, supervises and restarts beside itself, with their
+# output folded into this log.
+#
+# They are separate processes on purpose. The dashboard needs Jetty, Javalin
+# and the Kotlin runtime -- several megabytes against Relay's own couple of
+# hundred kilobytes of code -- and a Discord bot would bring a second HTTP and
+# WebSocket stack that would eventually meet Netty. None of that belongs in the
+# process carrying player traffic, where a leak costs players their session
+# rather than an operator a page refresh.
+#
+# command is a list of arguments, not a string. Splitting a command line
+# correctly is a job nobody gets right first time, and paths with spaces are
+# the normal case on Windows.
+#
+# Relay puts RELAY_CONTROL_HOST, RELAY_CONTROL_PORT and RELAY_CONTROL_TOKEN in
+# each companion's environment; anything under [companions.<name>.environment]
+# is added to that.
+#
+# On shutdown a companion is told over the control channel and given five
+# seconds to exit on its own, because Windows has no signal to ask a process to
+# stop politely and a hard kill skips its shutdown entirely.
+
+# [companions.dashboard]
+# command = ["java", "-jar", "companions/relay-dashboard.jar"]
+# enabled = true
+# restart = true
+#
+# [companions.dashboard.environment]
+# RELAY_DASHBOARD_PORT = "8080"
 
 
 # ----------------------------------------------------------------- backends

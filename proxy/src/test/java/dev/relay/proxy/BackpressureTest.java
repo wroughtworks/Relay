@@ -178,6 +178,7 @@ class BackpressureTest {
                 online-mode = false
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = %d
                 read-timeout = 60000
 

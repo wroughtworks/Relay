@@ -1,4 +1,4 @@
-package dev.relay.dashboard;
+package dev.relay.control;
 
 import dev.relay.health.BackendHealth;
 import dev.relay.health.BackendStats;
@@ -12,16 +12,16 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The proxy's live state, shaped for a browser.
+ * The proxy's live state, flattened into things that can cross a process boundary.
  *
- * <p>Read-only on purpose, and the boundary is the point rather than a stage to grow out
- * of. Nothing here can move a player, close a connection or touch config, so no request
- * this serves can destabilise a running network &mdash; which is what makes it reasonable
- * to expose before any of spec &sect;9.6's authentication exists.
+ * <p>Companions run in their own JVMs and cannot hold a {@link ConnectedPlayer}: doing so
+ * would reach a Netty channel, a session handler and every packet queue behind it. These
+ * records are flat, immutable, and say exactly what leaves the process &mdash; which is
+ * the whole contract between Relay and anything watching it.
  *
- * <p>Records rather than the live objects. Serialising {@link ConnectedPlayer} directly
- * would reach a Netty channel, a session handler and every packet queue behind it; these
- * are flat, immutable, and say exactly what leaves the process.
+ * <p>Read-only, and the boundary is the point rather than a stage to grow out of. Nothing
+ * here can move a player, close a connection or touch config, so nothing a companion asks
+ * for can destabilise a running network.
  *
  * <h2>What is deliberately absent</h2>
  * Player IP addresses. The proxy knows them and an operator has fair use for them, but
@@ -29,11 +29,11 @@ import java.util.List;
  * with addresses is a different class of leak from one that says who is online. They can
  * be added with the login that guards them.
  */
-public final class DashboardApi {
+public final class ControlState {
 
     private final RelayProxy proxy;
 
-    public DashboardApi(RelayProxy proxy) {
+    public ControlState(RelayProxy proxy) {
         this.proxy = proxy;
     }
 

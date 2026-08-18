@@ -3,6 +3,7 @@ package dev.relay.config;
 import com.electronwill.nightconfig.core.Config;
 import com.electronwill.nightconfig.core.io.ParsingMode;
 import com.electronwill.nightconfig.toml.TomlFormat;
+import dev.relay.config.RelayConfig.CompanionEntry;
 import dev.relay.config.RelayConfig.ProtocolOverride;
 import dev.relay.config.RelayConfig.ServerEntry;
 import org.slf4j.Logger;
@@ -23,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -149,11 +151,12 @@ public final class ConfigLoader {
                     + healthFailures);
         }
 
-        // Off by default. It serves who is online and where, which is not something to
-        // start publishing on an upgrade without the operator asking for it.
-        boolean dashboardEnabled = config.getOrElse("dashboard.enabled", Boolean.FALSE);
-        InetSocketAddress dashboardBind = parseAddress(
-                config.getOrElse("dashboard.bind", "127.0.0.1:8080"), "dashboard.bind");
+        // On by default, but it publishes nothing on its own: it is loopback, token
+        // gated, and silent until a companion connects. Off, no companion can start.
+        boolean controlEnabled = config.getOrElse("control.enabled", Boolean.TRUE);
+        InetSocketAddress controlBind = parseAddress(
+                config.getOrElse("control.bind", "127.0.0.1:25580"), "control.bind");
+        List<CompanionEntry> companions = parseCompanions(config);
 
         Map<String, ServerEntry> servers = parseServers(config);
         if (servers.isEmpty()) {
@@ -181,7 +184,7 @@ public final class ConfigLoader {
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
                 healthEnabled, healthInterval, healthTimeout, healthFailures,
-                dashboardEnabled, dashboardBind,
+                controlEnabled, controlBind, companions,
                 servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }
 
@@ -293,6 +296,58 @@ public final class ConfigLoader {
         Map<String, List<String>> all = new LinkedHashMap<>(explicit);
         derived.forEach((name, members) -> all.put(name, List.copyOf(members)));
         return all;
+    }
+
+    /**
+     * Reads {@code [companions]}: the processes Relay starts beside itself.
+     *
+     * <p>The command is a list rather than a string. Splitting a command line correctly is
+     * a job nobody gets right on the first attempt -- quoting, escapes, and on Windows
+     * paths with spaces in them as the normal case -- and getting it wrong produces a
+     * process that fails to start for reasons the operator cannot see in their own config.
+     */
+    private static List<CompanionEntry> parseCompanions(Config config) {
+        Config section = config.get("companions");
+        List<CompanionEntry> companions = new ArrayList<>();
+        if (section == null) {
+            return companions;
+        }
+        for (Config.Entry entry : section.entrySet()) {
+            String name = entry.getKey();
+            Object value = entry.getValue();
+            if (!(value instanceof Config companion)) {
+                throw new IllegalArgumentException("Companion '" + name
+                        + "' must be a table, for example [companions." + name + "]");
+            }
+            Object command = companion.get("command");
+            List<String> arguments;
+            if (command instanceof List<?> list) {
+                // Objects.toString, never String::valueOf. Against a wildcard element
+                // type the compiler resolves that method reference to valueOf(char[]),
+                // and every string argument then fails to cast at runtime -- which
+                // presents as a config error naming no key at all.
+                arguments = list.stream().map(Objects::toString).toList();
+            } else if (command instanceof String single && !single.isBlank()) {
+                arguments = List.of(single);
+            } else {
+                throw new IllegalArgumentException("Companion '" + name
+                        + "' needs a command, as a list of arguments");
+            }
+
+            Map<String, String> environment = new LinkedHashMap<>();
+            Object env = companion.get("environment");
+            if (env instanceof Config table) {
+                for (Config.Entry variable : table.entrySet()) {
+                    environment.put(variable.getKey(), Objects.toString(variable.getValue()));
+                }
+            }
+
+            companions.add(new CompanionEntry(name, arguments,
+                    companion.getOrElse("enabled", Boolean.TRUE),
+                    companion.getOrElse("restart", Boolean.TRUE),
+                    environment));
+        }
+        return companions;
     }
 
     /** Accepts either a backend or a group, since anywhere a player can be sent takes both. */

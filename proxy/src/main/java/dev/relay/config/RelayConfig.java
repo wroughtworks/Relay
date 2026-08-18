@@ -39,8 +39,9 @@ public record RelayConfig(
         int healthIntervalMillis,
         int healthTimeoutMillis,
         int healthFailuresBeforeDown,
-        boolean dashboardEnabled,
-        InetSocketAddress dashboardBind,
+        boolean controlEnabled,
+        InetSocketAddress controlBind,
+        List<CompanionEntry> companions,
         Map<String, ServerEntry> servers,
         Map<String, List<String>> groups,
         BalanceStrategy balance,
@@ -61,6 +62,19 @@ public record RelayConfig(
         permissions = Collections.unmodifiableMap(new LinkedHashMap<>(permissions));
         tryOrder = List.copyOf(tryOrder);
         protocolOverrides = List.copyOf(protocolOverrides);
+        companions = List.copyOf(companions);
+    }
+
+    /**
+     * A process Relay starts and supervises beside itself.
+     *
+     * @param command the argument list, already split. A list rather than a string
+     *                because splitting one correctly is a job nobody gets right on the
+     *                first try, and paths with spaces are the normal case on Windows
+     * @param restart whether to bring it back when it exits unexpectedly
+     */
+    public record CompanionEntry(String name, List<String> command, boolean enabled,
+                                 boolean restart, Map<String, String> environment) {
     }
 
     /** A backend Relay can send players to. */

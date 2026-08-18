@@ -72,6 +72,7 @@ class ConfigLoaderTest {
                 online-mode = false
                 forwarding-mode = "legacy"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = 128
                 intercept-commands = false
                 try = ["survival", "lobby"]
@@ -134,6 +135,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25599"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -151,6 +153,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "modern"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -167,6 +170,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -182,6 +186,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "modern"
                 health.enabled = false
+                control.enabled = false
                 forwarding-secret-file = "forwarding.secret"
 
                 [servers]
@@ -197,6 +202,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 """);
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ConfigLoader.load(path));
@@ -210,6 +216,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 try = ["nope"]
 
                 [servers]
@@ -225,6 +232,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -243,6 +251,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 balance = "round-robin"
                 try = ["survival"]
 
@@ -287,6 +296,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -320,6 +330,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -351,6 +362,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 pvp-arena = "127.0.0.1:25566"
@@ -386,6 +398,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -403,6 +416,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -418,6 +432,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"
@@ -435,6 +450,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-level = 12
 
                 [servers]
@@ -450,6 +466,7 @@ class ConfigLoaderTest {
                 bind = "0.0.0.0:25565"
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
 
                 [servers]
                 lobby = "127.0.0.1:25566"

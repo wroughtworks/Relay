@@ -1,0 +1,27 @@
+<configuration>
+
+  <!--
+    The parent process captures this stream and re-logs every line with its own
+    timestamp and a [dashboard] prefix, so repeating either here would print them
+    twice. Level and message only.
+  -->
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%-5level %logger{0} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!--
+    Jetty and Javalin log a paragraph per request at DEBUG, and without a config
+    file logback defaults the root logger to DEBUG. Supervised, that lands in the
+    proxy's own log: one page refresh produced hundreds of lines about selector
+    keys and thread pool eviction, burying everything the proxy had to say.
+  -->
+  <logger name="org.eclipse.jetty" level="WARN"/>
+  <logger name="io.javalin" level="WARN"/>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+
+</configuration>

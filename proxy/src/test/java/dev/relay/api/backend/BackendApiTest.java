@@ -408,6 +408,7 @@ class BackendApiTest {
                 online-mode = false
                 forwarding-mode = "none"
                 health.enabled = false
+                control.enabled = false
                 compression-threshold = -1
                 try = ["lobby"]
 

@@ -1,6 +1,6 @@
 rootProject.name = "relay"
 
-include("proxy", "paper-plugin")
+include("proxy", "paper-plugin", "dashboard")
 
 dependencyResolutionManagement {
     repositories {
