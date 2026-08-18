@@ -34,8 +34,9 @@ commands that reach the proxy by plugin message. See
 - **Forwarding**: modern (Velocity-compatible, HMAC signed), legacy (BungeeCord), none
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
-- **Resilience**: a backend that dies moves its players to the next server in the try
-  list rather than off the network, so restarting one server is not an outage
+- **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
+  restart does — moves its players to the next server in the try list rather than off the
+  network, so restarting one server is not an outage
 - **Commands**: `/server`, `/glist`, `/find`, `/send`, with permission nodes
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)

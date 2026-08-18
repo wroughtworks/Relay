@@ -179,6 +179,111 @@ class BackendLossFallbackTest {
         }
     }
 
+    /**
+     * A backend that kicks on the way down moves the player rather than losing them.
+     *
+     * <p>This is the case that actually happens. A planned restart kicks everyone before
+     * it closes, and a kick relayed as-is takes the client back to the multiplayer menu
+     * before Relay can move it &mdash; leaving the close, moments later, with nobody to
+     * rescue. Covering only the crash case would look like a working feature and fail on
+     * every ordinary restart.
+     */
+    @Test
+    void aBackendKickMovesThePlayerInsteadOfEndingTheirSession(@TempDir Path dir) throws Exception {
+        Backend lobby = new Backend("lobby", LOBBY_MARKER, true, "{\"text\":\"Server closed\"}");
+        Backend survival = new Backend("survival", SURVIVAL_MARKER, false);
+
+        CompletableFuture<Void> lobbyReady = lobby.serve();
+        CompletableFuture<Void> survivalReady = survival.serve();
+
+        int port = freePort();
+        writeConfig(dir, port, lobby.port(), survival.port(), "\"lobby\", \"survival\"");
+
+        proxy = new RelayProxy(ConfigLoader.load(dir.resolve("relay.toml")));
+        proxy.start();
+
+        try (Socket socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(20_000);
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+
+            login(out, in, port);
+            lobbyReady.get(15, TimeUnit.SECONDS);
+
+            ByteBuf world = readUntilId(in, LOBBY_MARKER);
+            assertNotNull(world, "expected play data from lobby");
+            world.release();
+
+            // The kick is claimed, and its wording carried into the notice: a player
+            // kicked for a reason should still be told the reason.
+            ByteBuf notice = readUntilId(in, CB_PLAY_SYSTEM_CHAT);
+            assertNotNull(notice, "the player was never told why they were moved");
+            String text = text(notice);
+            assertTrue(text.contains("Server closed"),
+                    "the backend's own reason should survive into the notice, got: " + text);
+
+            ByteBuf startConfiguration = readUntilId(in, CB_PLAY_START_CONFIGURATION);
+            assertNotNull(startConfiguration, "a kicked player should have been moved, not dropped");
+            startConfiguration.release();
+
+            writeFrame(out, Unpooled.buffer().writeByte(SB_PLAY_CONFIG_ACK));
+            out.flush();
+
+            ByteBuf registry = readUntilId(in, CB_CONFIG_REGISTRY);
+            assertNotNull(registry, "the new backend never configured the kicked player");
+            registry.release();
+
+            ByteBuf finish = readUntilId(in, CB_CONFIG_FINISH);
+            assertNotNull(finish, "the new backend never finished configuring the player");
+            finish.release();
+
+            writeFrame(out, Unpooled.buffer().writeByte(SB_CONFIG_FINISH_ACK));
+            out.flush();
+
+            survivalReady.get(15, TimeUnit.SECONDS);
+            assertEquals(1, survival.playersSeen(), "the kicked player should have landed on the other server");
+        }
+    }
+
+    /**
+     * A kick that cannot be escaped reaches the player in the backend's own words.
+     *
+     * <p>Claiming the kick must not cost the reason. Someone kicked for being banned and
+     * with nowhere else to go should read the ban message, not a summary Relay invented
+     * &mdash; especially since from 1.20.3 the reason is network NBT that Relay can write
+     * but not read, so the only faithful thing to send is the original bytes.
+     */
+    @Test
+    void anInescapableKickReachesThePlayerUnchanged(@TempDir Path dir) throws Exception {
+        Backend lobby = new Backend("lobby", LOBBY_MARKER, true, "{\"text\":\"You are banned\"}");
+        CompletableFuture<Void> lobbyReady = lobby.serve();
+
+        int port = freePort();
+        writeConfig(dir, port, lobby.port(), lobby.port(), "\"lobby\"");
+
+        proxy = new RelayProxy(ConfigLoader.load(dir.resolve("relay.toml")));
+        proxy.start();
+
+        try (Socket socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(20_000);
+            OutputStream out = socket.getOutputStream();
+            InputStream in = socket.getInputStream();
+
+            login(out, in, port);
+            lobbyReady.get(15, TimeUnit.SECONDS);
+
+            ByteBuf world = readUntilId(in, LOBBY_MARKER);
+            assertNotNull(world, "expected play data from lobby");
+            world.release();
+
+            ByteBuf disconnect = readUntilId(in, CB_PLAY_DISCONNECT);
+            assertNotNull(disconnect, "the player was never disconnected");
+            String text = text(disconnect);
+            assertTrue(text.contains("You are banned"),
+                    "the backend's reason should have been passed through, got: " + text);
+        }
+    }
+
     private static void writeConfig(Path dir, int port, int lobbyPort, int survivalPort, String tryOrder)
             throws IOException {
         Files.writeString(dir.resolve("relay.toml"), """
@@ -276,13 +381,19 @@ class BackendLossFallbackTest {
         private final String name;
         private final int marker;
         private final boolean dieAfterPlay;
+        private final String kickReason;
         private final ServerSocket socket;
         private volatile int playersSeen;
 
         Backend(String name, int marker, boolean dieAfterPlay) throws IOException {
+            this(name, marker, dieAfterPlay, null);
+        }
+
+        Backend(String name, int marker, boolean dieAfterPlay, String kickReason) throws IOException {
             this.name = name;
             this.marker = marker;
             this.dieAfterPlay = dieAfterPlay;
+            this.kickReason = kickReason;
             this.socket = new ServerSocket();
             this.socket.bind(new InetSocketAddress("127.0.0.1", 0));
             sockets.add(this.socket);
@@ -339,6 +450,15 @@ class BackendLossFallbackTest {
                     ready.complete(null);
 
                     if (dieAfterPlay) {
+                        if (kickReason != null) {
+                            // What a planned shutdown looks like: everyone is kicked
+                            // first, and the socket closes afterwards.
+                            ByteBuf kick = Unpooled.buffer();
+                            kick.writeByte(CB_PLAY_DISCONNECT);
+                            ProtocolUtils.writeString(kick, kickReason);
+                            writeFrame(out, kick);
+                            out.flush();
+                        }
                         // Half-close rather than close outright. The proxy has already
                         // written to this backend -- the plugin-channel registration, at
                         // least -- and closing a socket with data still unread in its

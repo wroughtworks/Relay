@@ -133,7 +133,7 @@ public final class BackendConfigSessionHandler implements SessionHandler {
         // which no amount of waiting fixes: either another backend picks the client up
         // where this one dropped it, or the session ends with a reason.
         new BackendConnector(proxy, player).fallbackAfterLoss(attempt.target(), Component.text(
-                "Lost connection to " + attempt.target().name(), NamedTextColor.RED));
+                "Lost connection to " + attempt.target().name() + ".", NamedTextColor.RED));
     }
 
     @Override

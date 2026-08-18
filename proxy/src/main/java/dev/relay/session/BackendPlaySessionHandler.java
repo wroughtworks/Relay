@@ -34,6 +34,8 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     private final ServerConnection server;
     private final PacketTrail fromBackend = new PacketTrail();
     private final BackendApiHandler api;
+    /** Null when moving players off a dying backend is switched off; kicks then relay as-is. */
+    private final BackendKickHandler kicks;
 
     /** Counted separately from received: a gap means packets were dropped, not relayed. */
     private long delivered;
@@ -42,6 +44,7 @@ public final class BackendPlaySessionHandler implements SessionHandler {
         this.proxy = proxy;
         this.server = server;
         this.api = proxy.config().backendApiEnabled() ? new BackendApiHandler(proxy, server) : null;
+        this.kicks = proxy.config().fallbackOnBackendLoss() ? new BackendKickHandler(proxy, server) : null;
     }
 
     /**
@@ -73,6 +76,11 @@ public final class BackendPlaySessionHandler implements SessionHandler {
         // Plugin messages the backend addresses to the proxy are claimed here rather
         // than relayed on to the player, who has no use for proxy control traffic.
         if (api != null && api.tryHandle(frame)) {
+            return;
+        }
+        // A kick is claimed too. Relaying it would take the player off the network before
+        // Relay could move them, which is exactly what a restart must not do.
+        if (kicks != null && kicks.tryHandle(frame)) {
             return;
         }
         forward(frame);
@@ -135,7 +143,7 @@ public final class BackendPlaySessionHandler implements SessionHandler {
         // Detached first, so the rescue below starts from a player with no backend
         // rather than one still pointing at a socket that has gone.
         new BackendConnector(proxy, player).fallbackAfterLoss(server.target(),
-                Component.text("Lost connection to " + server.target().name(), NamedTextColor.RED));
+                Component.text("Lost connection to " + server.target().name() + ".", NamedTextColor.RED));
     }
 
     /** The mirror of the player-side backpressure check. */

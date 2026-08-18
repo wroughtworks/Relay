@@ -1,11 +1,13 @@
 package dev.relay.session;
 
 import dev.relay.config.ForwardingMode;
+import dev.relay.protocol.ProtocolState;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.ConnectionResult;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
+import io.netty.buffer.Unpooled;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -45,6 +47,14 @@ public final class BackendConnector {
     private final RelayProxy proxy;
     private final ConnectedPlayer player;
 
+    /**
+     * A backend's own kick, kept whole in case the player ends up with nowhere to go.
+     *
+     * <p>Bytes rather than a buffer: it has to outlive the call that captured it, and a
+     * retained frame would be one more thing that can leak down a path with several exits.
+     */
+    private byte[] verbatimKick;
+
     public BackendConnector(RelayProxy proxy, ConnectedPlayer player) {
         this.proxy = proxy;
         this.player = player;
@@ -74,6 +84,19 @@ public final class BackendConnector {
      * @param reason shown to the player if nothing else will take them
      */
     public void fallbackAfterLoss(RegisteredServer lost, Component reason) {
+        fallbackAfterLoss(lost, reason, null);
+    }
+
+    /**
+     * As {@link #fallbackAfterLoss(RegisteredServer, Component)}, preserving a kick.
+     *
+     * @param verbatimKick the backend's own disconnect frame, sent unchanged if nothing
+     *                     will take the player &mdash; its reason may be network NBT,
+     *                     which Relay writes but cannot read, and a player kicked for
+     *                     being banned should see the server's words rather than Relay's
+     */
+    public void fallbackAfterLoss(RegisteredServer lost, Component reason, byte[] verbatimKick) {
+        this.verbatimKick = verbatimKick;
         if (!player.isActive()) {
             return;
         }
@@ -112,13 +135,20 @@ public final class BackendConnector {
                 player.username(), lost.name(), candidates);
         // Said now, while the player is still in play state: the switch takes them out of
         // it, and chat sent in configuration state has nowhere to render.
-        player.sendMessage(Component.text("Lost connection to " + lost.name()
-                + ". Moving you to another server...", NamedTextColor.YELLOW));
+        player.sendMessage(Component.text().append(reason)
+                .append(Component.text(" Moving you to another server...", NamedTextColor.YELLOW))
+                .build());
         tryCandidate(candidates, 0, reason);
     }
 
     private void giveUp(Component reason) {
         player.endRecovery();
+        if (verbatimKick != null && player.connection().state() == ProtocolState.PLAY) {
+            LOG.info("Nothing else would take {}; passing on the kick they were given",
+                    player.username());
+            player.connection().closeWithFrame(Unpooled.wrappedBuffer(verbatimKick));
+            return;
+        }
         player.disconnect(reason);
     }
 

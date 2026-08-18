@@ -220,6 +220,23 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         future.addListener(ChannelFutureListener.CLOSE);
     }
 
+    /**
+     * Sends a frame received from elsewhere, then closes once it has reached the socket.
+     *
+     * <p>For handing on a packet Relay cannot rebuild: a backend's kick, whose reason is
+     * network NBT from 1.20.3 onward and which Relay writes but cannot read. Forwarding
+     * the bytes keeps the server's exact wording rather than replacing it with a summary.
+     */
+    public void closeWithFrame(ByteBuf frame) {
+        if (!isActive()) {
+            frame.release();
+            return;
+        }
+        closed = true;
+        closedLocally = true;
+        channel.writeAndFlush(frame).addListener(ChannelFutureListener.CLOSE);
+    }
+
     public void close() {
         closed = true;
         closedLocally = true;
