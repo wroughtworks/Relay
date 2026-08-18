@@ -236,7 +236,7 @@ public final class RelayProxy {
         // Deliberately verbose. Every backend-side problem so far has come down to which
         // build is running, which config it read, or which secret that config held --
         // none of which were visible from the logs while diagnosing them.
-        LOG.info("Relay {} starting", version());
+        LOG.info("Relay {} starting as node '{}'", version(), config.nodeName());
         LOG.info("Config     {}", config.sourcePath());
         LOG.info("Listening  {}:{} ({} transport)", bind.getHostString(), bind.getPort(),
                 transport.name().toLowerCase(Locale.ROOT));

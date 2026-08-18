@@ -3,6 +3,7 @@ package dev.relay.control;
 import dev.relay.health.BackendHealth;
 import dev.relay.health.BackendStats;
 import dev.relay.proxy.ConnectedPlayer;
+import dev.relay.proxy.NetworkRoute;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
@@ -38,8 +39,9 @@ public final class ControlState {
     }
 
     /** Enough for a landing page, in one request rather than three. */
-    public record Overview(String version, long uptimeSeconds, int players, int maxPlayers,
-                           int servers, int serversUp, int groups, String balance, String bind) {
+    public record Overview(String node, String version, long uptimeSeconds, int players,
+                           int maxPlayers, int servers, int serversUp, int groups,
+                           String balance, String bind) {
     }
 
     /**
@@ -87,12 +89,24 @@ public final class ControlState {
      * @param onlineSeconds how long since the connection opened, not since they joined
      *                      the server named above
      */
+    /**
+     * @param routeId     spec 7.7's per-session id, for tying log lines to a dashboard row
+     * @param virtualHost the hostname they connected to, which with forced hosts is the
+     *                    reason they landed where they did
+     * @param route       spec 9.1's complete route, hop by hop
+     */
     public record PlayerView(String username, String uuid, String server, int protocol,
-                             long onlineSeconds) {
+                             long onlineSeconds, String routeId, String virtualHost,
+                             List<HopView> route) {
+    }
+
+    /** One hop, flattened. Kind as a string so a client can style without parsing names. */
+    public record HopView(String kind, String name, String detail) {
     }
 
     public Overview overview() {
         return new Overview(
+                proxy.config().nodeName(),
                 RelayProxy.version(),
                 proxy.uptimeMillis() / 1000,
                 proxy.players().count(),
@@ -144,12 +158,18 @@ public final class ControlState {
 
     public PlayerView view(ConnectedPlayer player) {
         ServerConnection current = player.connectedServer();
+        NetworkRoute route = NetworkRoute.of(player, proxy);
         return new PlayerView(
                 player.username(),
                 player.uuid().toString(),
                 current == null ? null : current.target().name(),
                 player.version().id(),
-                (System.currentTimeMillis() - player.connectedAt()) / 1000);
+                (System.currentTimeMillis() - player.connectedAt()) / 1000,
+                route.routeId(),
+                route.virtualHost(),
+                route.hops().stream()
+                        .map(hop -> new HopView(hop.kind().name(), hop.name(), hop.detail()))
+                        .toList());
     }
 
     private static Load load(BackendStats stats) {

@@ -221,6 +221,17 @@ timeout = 3000
 failures-before-down = 3
 
 
+# --------------------------------------------------------------------- node
+#
+# This proxy's identity (spec 7.9). One node today, so it is only a label --
+# but it is the label a player's route is read against, and every node called
+# "relay" would make those routes useless the day there are two.
+#
+# Defaults to the machine's hostname.
+#
+# node-name = "relay-01"
+
+
 # ------------------------------------------------------------------ control
 #
 # The private channel companion processes use to watch and question the proxy:

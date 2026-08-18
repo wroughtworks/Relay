@@ -239,7 +239,7 @@ dashboard that needs a CDN to render fails exactly when someone is diagnosing an
 | `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
 | `GET /api/servers` | each backend: address, group, health, latency, version, its own player count, and a `load` object with TPS, MSPT, heap and CPU |
 | `GET /api/groups` | each group, its members, and its total |
-| `GET /api/players` | who is online and which backend they are on |
+| `GET /api/players` | who is online, which backend they are on, and their full network route |
 | `WS /api/events` | one socket carrying every event type |
 
 Events arrive as `{type, player, from, to}`, with `type` one of `PLAYER_CONNECTED`,
@@ -262,6 +262,32 @@ going to zero, which is why every report is stamped with its age.
 
 Relay warns at startup if you bind it anywhere but loopback. Until there is auth, reach
 it over an SSH tunnel.
+
+## Network routes
+
+Spec §9.1 asks the Players view for a player's "complete route", and §7.7 defines a
+`routeId` per connection. Most of that shape belongs to the multi-proxy topology of §7,
+which is v2 — but the part that is true today answers a question a backend name cannot:
+
+```
+mc.example.com → relay-01 → survival → survival-02
+```
+
+*Which* server someone is on is easy. *Why that one* is not, and with forced hosts and
+groups it is the question that actually gets asked. So a route records the hostname they
+connected to, any upstream that announced itself with a PROXY header, this node, the
+group that made the choice, and the backend that answered. `survival` deciding and
+`survival-02` answering are two different facts; collapsing them would hide the balancing
+decision.
+
+It appears in `/api/players`, on the dashboard, and in `/find <player>`. Each session also
+carries a short `routeId` — §7.7 issues it for loop prevention across chained proxies,
+which is v2, but it is independently the cheapest thing that makes a session greppable:
+one token tying every log line, event and dashboard row for one visit together.
+
+The node's own name comes from `node-name`, defaulting to the machine's hostname (§7.9).
+One node today makes it only a label, but it is the label routes are read against, and
+every node called `relay` would make them useless the day there are two.
 
 ## Configuring backends
 

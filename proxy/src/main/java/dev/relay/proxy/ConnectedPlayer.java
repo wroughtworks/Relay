@@ -30,6 +30,16 @@ public final class ConnectedPlayer {
     private final String virtualHost;
     private final long connectedAt = System.currentTimeMillis();
 
+    /**
+     * Spec &sect;7.7's route id, issued once per session.
+     *
+     * <p>Its stated job is loop prevention across chained proxies, which is a v2 concern.
+     * Issuing it now costs eight characters and makes a session greppable: one token ties
+     * every log line, event and dashboard row for one visit together, which is the thing
+     * that is missing at three in the morning.
+     */
+    private final String routeId = UUID.randomUUID().toString().substring(0, 8);
+
     private final AtomicReference<ServerConnection> connectedServer = new AtomicReference<>();
     private final AtomicReference<ServerConnection> connectionInFlight = new AtomicReference<>();
 
@@ -84,6 +94,21 @@ public final class ConnectedPlayer {
 
     public long connectedAt() {
         return connectedAt;
+    }
+
+    public String routeId() {
+        return routeId;
+    }
+
+    /**
+     * The upstream proxy this player arrived through, or {@code null} if they came direct.
+     *
+     * <p>Known only from a PROXY protocol header. Without one, anything in front of Relay
+     * is invisible to it by design.
+     */
+    public InetSocketAddress proxiedFrom() {
+        SocketAddress upstream = connection.upstreamAddress();
+        return upstream instanceof InetSocketAddress inet ? inet : null;
     }
 
     public SocketAddress remoteAddress() {

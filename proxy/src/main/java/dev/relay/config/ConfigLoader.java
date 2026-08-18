@@ -97,6 +97,21 @@ public final class ConfigLoader {
         }
     }
 
+    /**
+     * The machine's hostname, or a generic label if it will not say.
+     *
+     * <p>A better default than "relay": on the day there are two nodes, routes read
+     * against distinct names without anyone having configured anything.
+     */
+    private static String defaultNodeName() {
+        try {
+            String host = java.net.InetAddress.getLocalHost().getHostName();
+            return host == null || host.isBlank() ? "relay" : host;
+        } catch (java.net.UnknownHostException e) {
+            return "relay";
+        }
+    }
+
     /** A fresh forwarding secret, so a new install is never deployed with a shared one. */
     private static String generateSecret() {
         byte[] bytes = new byte[32];
@@ -106,6 +121,10 @@ public final class ConfigLoader {
 
     private static RelayConfig parse(Config config, Path path) {
         InetSocketAddress bind = parseAddress(require(config, "bind"), "bind");
+        // Spec 7.9: a stable identity for this node. One proxy today, so it is only a
+        // label -- but it is the label a player's route is read against, and hard-coding
+        // "relay" now would mean every route on every node looking identical later.
+        String nodeName = config.getOrElse("node-name", ConfigLoader::defaultNodeName);
         String motd = config.getOrElse("motd", "A Relay proxy");
         int maxPlayers = config.getIntOrElse("max-players", 100);
         boolean showOnlineCount = config.getOrElse("show-online-count", Boolean.TRUE);
@@ -180,7 +199,7 @@ public final class ConfigLoader {
         List<ProtocolOverride> overrides = parseProtocolOverrides(config);
 
         return new RelayConfig(path.toAbsolutePath(),
-                bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
+                bind, nodeName, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
                 healthEnabled, healthInterval, healthTimeout, healthFailures,

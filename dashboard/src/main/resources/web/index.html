@@ -57,6 +57,17 @@
   .UNHEALTHY, .OFFLINE { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
   .UNKNOWN  { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
   td .why { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .route { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .hop { display: inline-flex; align-items: baseline; gap: 6px; padding: 1px 8px;
+         border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .hop small { color: var(--muted); font-size: 11px; }
+  .hop.EDGE    { border-color: color-mix(in srgb, var(--muted) 55%, transparent); }
+  .hop.PROXY   { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .hop.POOL    { border-color: color-mix(in srgb, var(--good) 55%, transparent); }
+  .hop.BACKEND { border-color: color-mix(in srgb, var(--good) 55%, transparent); }
+  .arrow { color: var(--muted); }
+  .rid { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         color: var(--muted); }
   td.stale { color: var(--muted); }
   .bar { display: inline-block; vertical-align: middle; width: 46px; height: 6px;
          border-radius: 99px; background: color-mix(in srgb, var(--muted) 22%, transparent);
@@ -101,7 +112,8 @@
 
   <h2>Players</h2>
   <div class="scroll"><table>
-    <thead><tr><th>Player</th><th>Backend</th><th>Protocol</th><th>Online</th></tr></thead>
+    <thead><tr><th>Player</th><th>Route</th><th>Via</th><th>Protocol</th>
+               <th>Online</th><th>Route ID</th></tr></thead>
     <tbody id="players"></tbody>
   </table></div>
 
@@ -171,7 +183,8 @@ async function refresh() {
         .map(p => fetch("api/" + p).then(r => r.json())));
 
     $("meta").textContent =
-      overview.version + " · listening on " + overview.bind + " · up " + duration(overview.uptimeSeconds);
+      overview.node + " · " + overview.version + " · listening on " + overview.bind
+      + " · up " + duration(overview.uptimeSeconds);
 
     $("tiles").replaceChildren(...[
       ["Players", overview.players + " / " + overview.maxPlayers],
@@ -242,9 +255,37 @@ async function refresh() {
            row([g.name, g.members.join(", "), g.healthy + " / " + g.members.length, g.players])),
          4, "none");
 
-    fill($("players"),
-         players.map(p => row([p.username, p.server, p.protocol, duration(p.onlineSeconds)])),
-         4, "nobody online");
+    fill($("players"), players.map(p => {
+      const tr = row([p.username, "", p.virtualHost, p.protocol,
+                      duration(p.onlineSeconds), p.routeId]);
+      // The route is the answer to "why is this player here", which a backend name
+      // alone cannot give: with forced hosts and groups, the path is the reason.
+      const cell = tr.children[1];
+      const path = document.createElement("div");
+      path.className = "route";
+      (p.route ?? []).forEach((hop, i) => {
+        if (i > 0) {
+          const arrow = document.createElement("span");
+          arrow.className = "arrow";
+          arrow.textContent = "→";
+          path.appendChild(arrow);
+        }
+        const node = document.createElement("span");
+        node.className = "hop " + hop.kind;
+        const name = document.createElement("b");
+        name.textContent = hop.name;
+        node.appendChild(name);
+        if (hop.detail) {
+          const detail = document.createElement("small");
+          detail.textContent = hop.detail;
+          node.appendChild(detail);
+        }
+        path.appendChild(node);
+      });
+      cell.replaceChildren(path);
+      tr.children[5].className = "rid";
+      return tr;
+    }), 6, "nobody online");
   } catch (e) {
     $("meta").textContent = "cannot reach the proxy";
   }

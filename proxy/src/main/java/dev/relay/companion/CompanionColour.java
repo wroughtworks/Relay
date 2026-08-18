@@ -33,21 +33,23 @@ public abstract class CompanionColour extends ClassicConverter {
     static final String MDC_KEY = "companionColour";
 
     /**
+     * The escape character, built from its code point.
+     *
+     * <p>Never written as a literal control byte. One in a source file is invisible in
+     * review and survives right up until an editor, a merge tool or a copy-paste
+     * helpfully removes it -- at which point the logs quietly print {@code [36m} at the
+     * start of every line and nothing reports an error. This file had exactly that
+     * happen to it once already.
+     */
+    private static final String ESC = String.valueOf((char) 27);
+
+    /**
      * Foreground colours that stay readable on both dark and light terminals.
      *
      * <p>Deliberately excludes red and plain white: red reads as an error when it only
      * means "this came from the second companion", and white is indistinguishable from
      * the proxy's own uncoloured output.
      */
-    /**
-     * Written as an escape, never as a raw control byte in the source.
-     *
-     * <p>A literal ESC in a file is invisible in review and survives right up until the
-     * day an editor, a merge tool or a copy-paste helpfully removes it -- at which point
-     * the logs simply print {@code [36m} at the start of every line.
-     */
-    private static final String ESC = "";
-
     private static final String[] PALETTE = {
             ESC + "[36m",   // cyan
             ESC + "[35m",   // magenta

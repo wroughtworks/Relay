@@ -83,6 +83,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         return declared != null ? declared : channel.remoteAddress();
     }
 
+    /**
+     * The peer that spoke PROXY protocol on a player's behalf, or {@code null}.
+     *
+     * <p>When a header has been read, the socket's own peer is no longer the player: it
+     * is whatever sat in front and declared them. That is the only evidence Relay has
+     * that an upstream exists at all, and it is worth keeping rather than discarding
+     * once the real address has been recovered from it.
+     */
+    public SocketAddress upstreamAddress() {
+        return realRemoteAddress == null ? null : channel.remoteAddress();
+    }
+
     /** Called by {@link ProxyProtocolHandler} once an inbound PROXY header is parsed. */
     void setRealRemoteAddress(SocketAddress address) {
         this.realRemoteAddress = address;

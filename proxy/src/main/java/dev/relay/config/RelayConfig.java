@@ -17,6 +17,7 @@ import java.util.Map;
 public record RelayConfig(
         Path sourcePath,
         InetSocketAddress bind,
+        String nodeName,
         String motd,
         int maxPlayers,
         boolean showOnlineCount,
