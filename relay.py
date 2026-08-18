@@ -1100,6 +1100,124 @@ def cmd_shutdown(args) -> int:
     return code
 
 
+def proxy_command(quiet: bool) -> list[str] | None:
+    """The java invocation for the proxy, or None if there is no jar yet."""
+    jar = jar_path()
+    if jar is None:
+        return None
+    command = ["java"]
+    if not quiet:
+        command.append("-Drelay.log.level=DEBUG")
+    return command + ["-jar", str(jar)]
+
+
+def start_proxy_tab(quiet: bool) -> bool:
+    """
+    Opens the proxy in a tab of the shared window.
+
+    Its console comes with it, so `stop` can be typed there for a clean shutdown
+    -- and this terminal is left free to be the control console instead.
+    """
+    command = proxy_command(quiet)
+    if command is None:
+        print(Style.red("No jar found. Run `build` first."))
+        return False
+    if windows_terminal() is None:
+        return False
+    subprocess.Popen(open_tab_command("relay-proxy", PROJECT, command))
+    print(Style.green("Relay opened as a tab"))
+    return True
+
+
+#: Commands the console handles itself rather than passing to the parser.
+SHELL_BUILTINS = {"help", "?", "exit", "quit", "cls", "clear"}
+
+
+def cmd_shell(args) -> int:
+    """
+    A control console for the running stack.
+
+    Typed lines are dispatched through the same parser the command line uses, so
+    there is exactly one definition of every command and the two cannot drift.
+    """
+    print()
+    print(Style.bold("Relay console") + Style.dim("   'help' for commands, 'exit' to leave"))
+    print(Style.dim("Servers keep running when you leave; 'down' stops them."))
+
+    parser = build_parser()
+    while True:
+        try:
+            line = input(Style.cyan("relay> ")).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+
+        word = line.split()[0].lower()
+        if word in ("exit", "quit"):
+            return 0
+        if word in ("cls", "clear"):
+            os.system("cls" if IS_WINDOWS else "clear")
+            continue
+        if word in ("help", "?"):
+            print_shell_help()
+            continue
+
+        try:
+            import shlex
+            parsed = parser.parse_args(shlex.split(line))
+        except SystemExit:
+            # argparse prints its own message and would otherwise end the console.
+            continue
+        except ValueError as error:
+            print(Style.red(f"Could not parse that: {error}"))
+            continue
+
+        if not getattr(parsed, "command", None):
+            print(Style.yellow("Unknown command. Try 'help'."))
+            continue
+        # `up` from inside the console would otherwise open a second console.
+        parsed.no_shell = True
+        try:
+            parsed.func(parsed)
+        except KeyboardInterrupt:
+            print(Style.yellow("  interrupted"))
+        except Exception as error:  # noqa: BLE001 - a console should survive anything
+            print(Style.red(f"  {type(error).__name__}: {error}"))
+
+
+def print_shell_help() -> None:
+    rows = [
+        ("status", "what is running, and which backends are up"),
+        ("doctor", "cross-check every config for silent mismatches"),
+        ("ping", "prove the proxy answers a server-list ping"),
+        ("logs -n 40", "recent proxy log, or 'logs -f' to follow"),
+        ("", ""),
+        ("start <name>", "start a backend in a tab"),
+        ("shutdown <name>", "stop a backend, saving the world"),
+        ("run", "restart the proxy in this terminal"),
+        ("stop", "stop the proxy"),
+        ("down", "stop the proxy and every backend"),
+        ("", ""),
+        ("build", "rebuild the jar and plugin"),
+        ("test", "run the test suite"),
+        ("plugin <name>", "install the Paper-side plugin"),
+        ("link <name> <path>", "register a backend"),
+        ("", ""),
+        ("exit", "leave the console; servers keep running"),
+    ]
+    print()
+    for command, description in rows:
+        if not command:
+            print()
+        else:
+            print(f"  {Style.cyan(command.ljust(20))} {description}")
+    print()
+    print(Style.dim("  Any relay.py command works here, with the same flags."))
+    print()
+
+
 def cmd_up(args) -> int:
     """Starts every backend in the background, waits for them, then runs the proxy."""
     entries = backends()
@@ -1135,6 +1253,21 @@ def cmd_up(args) -> int:
             print(Style.dim(f"  check {RUN_DIR / (name + '.log')}"))
 
     heading("Starting Relay")
+    if relay_processes():
+        print(Style.yellow("Relay is already running; stopping the old instance."))
+        cmd_stop(args)
+    if args.build or jar_is_stale():
+        if run_gradle([":proxy:build"]) != 0:
+            return 1
+
+    # The proxy gets a tab like everything else, which leaves this terminal free
+    # to be the control console rather than being consumed by the proxy's own.
+    if mode == TABS and start_proxy_tab(args.quiet):
+        if getattr(args, "no_shell", False):
+            return 0
+        return cmd_shell(args)
+
+    # No tabs available, so the proxy takes this terminal as before.
     return cmd_run(args)
 
 
@@ -1424,7 +1557,14 @@ def cmd_test(args) -> int:
 # --------------------------------------------------------------------------- cli
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """
+    The command surface, built once and shared.
+
+    The control console dispatches typed lines through this same parser, so every
+    command behaves identically whether it came from the shell or the command
+    line, and neither can drift from the other.
+    """
     parser = argparse.ArgumentParser(
         prog="relay.py",
         description="Development helper for the Relay Minecraft proxy.",
@@ -1432,7 +1572,8 @@ def main() -> int:
         epilog="""typical loop:
   py relay.py link lobby C:/mc/lobby   once, per backend
   py relay.py doctor                   catch the mismatches that fail silently
-  py relay.py up                       a tab per backend in one window, then the proxy
+  py relay.py up                       tabs for the backends and the proxy, then a
+                                       control console in this terminal
   py relay.py down                     stop all of it
 
 other:
@@ -1486,7 +1627,12 @@ other:
                     help="no consoles at all; log backends to files instead")
     up.add_argument("--build", action="store_true")
     up.add_argument("--quiet", action="store_true")
+    up.add_argument("--no-shell", action="store_true",
+                    help="skip the control console and return to the prompt")
     up.set_defaults(func=cmd_up)
+
+    shell = sub.add_parser("console", help="a control console for the running stack")
+    shell.set_defaults(func=cmd_shell)
 
     down = sub.add_parser("down", help="stop the proxy and every backend")
     down.add_argument("--force", action="store_true",
@@ -1530,6 +1676,11 @@ other:
     test.add_argument("--filter", help="e.g. dev.relay.api.*")
     test.set_defaults(func=cmd_test)
 
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
     if not args.command:
         parser.print_help()

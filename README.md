@@ -80,10 +80,24 @@ py relay.py up      # start every backend, wait for their ports, then run the pr
 py relay.py down    # stop all of it
 ```
 
-`up` puts every backend in **its own tab of a single Windows Terminal window**, so their
-output can be watched without covering the screen while this terminal runs the proxy.
-Navigate with `Ctrl+Tab`. Those tabs are real consoles, not log tails: `stop` and any
+`up` puts every backend **and the proxy** in tabs of a single Windows Terminal window,
+navigable with `Ctrl+Tab`. Those tabs are real consoles, not log tails: `stop` and any
 other server command can be typed straight into them.
+
+The terminal you launched from is then left free, and becomes a **control console**:
+
+```
+relay> status
+relay> doctor
+relay> ping
+relay> shutdown lobby
+relay> exit          # servers keep running
+```
+
+Every `relay.py` command works there with the same flags, because typed lines are
+dispatched through the same parser as the command line — there is one definition of each
+command rather than two that can drift. `py relay.py console` opens it against an
+already-running stack, and `up --no-shell` skips it.
 
 Individually:
 
