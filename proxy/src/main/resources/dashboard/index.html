@@ -57,6 +57,13 @@
   .UNHEALTHY, .OFFLINE { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
   .UNKNOWN  { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
   td .why { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  td.stale { color: var(--muted); }
+  .bar { display: inline-block; vertical-align: middle; width: 46px; height: 6px;
+         border-radius: 99px; background: color-mix(in srgb, var(--muted) 22%, transparent);
+         margin-left: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--good); }
+  .bar.warn i { background: var(--accent); }
+  .bar.hot i { background: var(--bad); }
   #feed { font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           max-height: 260px; overflow-y: auto; padding: 10px 16px; }
   #feed div { border-top: 1px solid var(--line); padding: 3px 0; }
@@ -78,8 +85,9 @@
 
   <h2>Backends</h2>
   <div class="scroll"><table>
-    <thead><tr><th>Name</th><th>Status</th><th>Address</th><th>Group</th>
-               <th>Players</th><th>Backend says</th><th>Latency</th><th>Version</th></tr></thead>
+    <thead><tr><th>Name</th><th>Status</th><th>Group</th><th>Players</th>
+               <th>TPS</th><th>MSPT</th><th>Heap</th><th>CPU</th>
+               <th>Latency</th><th>Address</th></tr></thead>
     <tbody id="servers"></tbody>
   </table></div>
 
@@ -130,6 +138,17 @@ const row = cells => {
   return tr;
 };
 
+// A proportion bar appended to a cell, so a number carries its own judgement.
+const bar = (cell, fraction, tone) => {
+  if (!(fraction >= 0)) return;
+  const outer = document.createElement("span");
+  outer.className = "bar" + (tone ? " " + tone : "");
+  const inner = document.createElement("i");
+  inner.style.width = Math.max(0, Math.min(1, fraction)) * 100 + "%";
+  outer.appendChild(inner);
+  cell.appendChild(outer);
+};
+
 const fill = (tbody, rows, columns, emptyText) => {
   tbody.replaceChildren();
   if (!rows.length) {
@@ -174,10 +193,16 @@ async function refresh() {
     }));
 
     fill($("servers"), servers.map(s => {
-      const tr = row([s.name, "", s.address, s.group, s.players,
-                      s.reportedPlayers < 0 ? null : s.reportedPlayers,
+      const load = s.load;
+      const tr = row([s.name, "", s.group, s.players,
+                      load && load.tps1m >= 0 ? load.tps1m.toFixed(1) : null,
+                      load && load.msptMean >= 0 ? load.msptMean.toFixed(1) + "ms" : null,
+                      load && load.memoryMaxMb > 0
+                        ? load.memoryUsedMb + " / " + load.memoryMaxMb + " MB" : null,
+                      load && load.cpuLoad >= 0 ? Math.round(load.cpuLoad * 100) + "%" : null,
                       s.latencyMillis < 0 ? null : s.latencyMillis + "ms",
-                      s.version]);
+                      s.address]);
+
       // The status cell is built rather than filled, so the state colours it.
       const cell = tr.children[1];
       const pill = document.createElement("span");
@@ -190,8 +215,27 @@ async function refresh() {
         why.textContent = s.detail;
         cell.appendChild(why);
       }
+
+      if (load) {
+        // TPS and MSPT get a bar each, since a number alone does not say whether
+        // 18.4 is fine. Thresholds are the ones an operator actually reacts to.
+        bar(tr.children[4], load.tps1m / 20, load.tps1m >= 19.5 ? "" : load.tps1m >= 18 ? "warn" : "hot");
+        bar(tr.children[5], Math.min(load.msptMean / 50, 1),
+            load.msptMean < 25 ? "" : load.msptMean < 45 ? "warn" : "hot");
+        if (load.memoryMaxMb > 0) {
+          const used = load.memoryUsedMb / load.memoryMaxMb;
+          bar(tr.children[6], used, used < 0.75 ? "" : used < 0.9 ? "warn" : "hot");
+        }
+        // Greyed rather than hidden when stale. A backend can only report while a
+        // player is on it, so these are usually last-known rather than wrong -- and
+        // hiding them would lose the only clue that a server froze.
+        if (load.stale) {
+          for (let i = 4; i <= 7; i++) tr.children[i].classList.add("stale");
+          tr.children[4].title = "last reported " + duration(load.ageSeconds) + " ago";
+        }
+      }
       return tr;
-    }), 8, "no backends configured");
+    }), 10, "no backends configured");
 
     $("groupsWrap").hidden = groups.length === 0;
     fill($("groups"), groups.map(g =>

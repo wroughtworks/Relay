@@ -187,6 +187,35 @@ public final class RelayApi {
     }
 
     /**
+     * Reports this server's own load to the proxy.
+     *
+     * <p>On {@link #RELAY_CHANNEL} rather than the BungeeCord one: nothing about this is
+     * BungeeCord-compatible, and a BungeeCord proxy receiving it would log an unknown
+     * sub-channel every interval.
+     *
+     * <p>Field order is the contract. New fields go on the end, so a proxy a version
+     * behind reads what it understands and stops, rather than misreading everything after
+     * the point where the two disagree.
+     */
+    public void reportStats(Player carrier, double tps1m, double tps5m, double tps15m,
+                            double msptMean, long usedMemory, long maxMemory, double cpuLoad,
+                            int players, long uptimeSeconds, String version) {
+        sendOn(carrier, RELAY_CHANNEL, out -> {
+            out.writeUTF("ServerStats");
+            out.writeDouble(tps1m);
+            out.writeDouble(tps5m);
+            out.writeDouble(tps15m);
+            out.writeDouble(msptMean);
+            out.writeLong(usedMemory);
+            out.writeLong(maxMemory);
+            out.writeDouble(cpuLoad);
+            out.writeInt(players);
+            out.writeLong(uptimeSeconds);
+            out.writeUTF(version);
+        });
+    }
+
+    /**
      * Sends a request through {@code carrier}.
      *
      * <p>Any online player will do &mdash; the message travels on their connection but is

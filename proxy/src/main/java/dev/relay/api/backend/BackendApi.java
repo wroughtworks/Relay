@@ -89,6 +89,16 @@ public final class BackendApi {
         public static final String GET_GROUPS = "GetGroups";
 
         /**
+         * Report a backend's own load: TPS, MSPT, memory, CPU.
+         *
+         * <p>Relay's own, and push rather than request. The proxy cannot ask -- a plugin
+         * message needs a player connection to travel on, so a poll would be a request
+         * that only works when it was already unnecessary. Letting the backend volunteer
+         * on a timer costs one small message per interval per populated server.
+         */
+        public static final String SERVER_STATS = "ServerStats";
+
+        /**
          * Run a proxy command as the sending player.
          *
          * <p>Relay's own, and the reason there is no sub-channel per command: a backend

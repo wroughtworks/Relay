@@ -3,6 +3,7 @@ package dev.relay.api.backend;
 import dev.relay.protocol.ProtocolUtils;
 import dev.relay.protocol.StateRegistry;
 import dev.relay.protocol.packet.PluginMessagePacket;
+import dev.relay.health.BackendStats;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
@@ -193,6 +194,7 @@ public final class BackendApiHandler {
                 }));
             }
             case Sub.RUN_COMMAND -> runCommand(player, in.readUTF());
+            case Sub.SERVER_STATS -> recordStats(in);
             case Sub.FORWARD -> forward(channel, in.readUTF(), in);
             case Sub.FORWARD_TO_PLAYER -> {
                 String target = in.readUTF();
@@ -237,6 +239,36 @@ public final class BackendApiHandler {
             case NO_SUCH_COMMAND -> player.sendMessage(Component.text("Unknown command: /" + name,
                     NamedTextColor.RED));
         }
+    }
+
+    /**
+     * Stores a backend's self-report of its own load.
+     *
+     * <p>Attributed to the connection it arrived on rather than to any name in the
+     * payload. A backend could otherwise report figures for a server it is not, and
+     * the connection is the one thing about the sender that cannot be forged from
+     * inside the message.
+     *
+     * <p>Fields are read in a fixed order and any that fail to arrive leave the rest
+     * intact, because this is the one API message whose sender is a plugin that may be a
+     * version behind the proxy. A newer plugin appending a field must not break an older
+     * proxy, and an older plugin omitting one must not lose the fields it did send.
+     */
+    private void recordStats(DataInputStream in) throws IOException {
+        double tps1 = in.readDouble();
+        double tps5 = in.readDouble();
+        double tps15 = in.readDouble();
+        double mspt = in.readDouble();
+        long usedMemory = in.readLong();
+        long maxMemory = in.readLong();
+        double cpu = in.readDouble();
+        int players = in.readInt();
+        long uptime = in.readLong();
+        String version = in.readUTF();
+
+        server.target().setStats(new BackendStats(tps1, tps5, tps15, mspt, usedMemory, maxMemory,
+                cpu, players, uptime, version, System.currentTimeMillis()));
+        LOG.debug("{} reports {} TPS, {}ms/tick, {} players", server.target().name(), tps1, mspt, players);
     }
 
     /** Every backend a name covers, so a group is addressable wherever one server is. */

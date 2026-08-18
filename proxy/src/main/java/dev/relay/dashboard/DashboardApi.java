@@ -1,6 +1,7 @@
 package dev.relay.dashboard;
 
 import dev.relay.health.BackendHealth;
+import dev.relay.health.BackendStats;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
@@ -51,7 +52,26 @@ public final class DashboardApi {
      */
     public record ServerView(String name, String address, int players, String group,
                              String status, long latencyMillis, int reportedPlayers,
-                             String version, String detail) {
+                             String version, String detail, Load load) {
+    }
+
+    /**
+     * A backend's own view of its load, or null if it has never reported.
+     *
+     * <p>Separate from {@link ServerView} rather than flattened into it, because these
+     * fields go stale together and are only meaningful together. A client that has to
+     * decide whether to trust six loose fields will get it wrong; one nullable object
+     * with an {@code ageSeconds} on it cannot be misread.
+     *
+     * @param stale      true when nothing has arrived recently. A backend can only report
+     *                   while a player is on it, so this usually means empty rather than
+     *                   broken -- but it might mean frozen, and the age says which
+     * @param memoryUsedMb heap in use, in whole megabytes, since bytes on a dashboard are
+     *                     a number nobody reads
+     */
+    public record Load(double tps1m, double tps5m, double tps15m, double msptMean,
+                       long memoryUsedMb, long memoryMaxMb, double cpuLoad,
+                       long uptimeSeconds, boolean stale, long ageSeconds) {
     }
 
     /**
@@ -97,7 +117,8 @@ public final class DashboardApi {
                     health.latencyMillis(),
                     health.reportedPlayers(),
                     health.version(),
-                    health.detail()));
+                    health.detail(),
+                    load(server.stats())));
         }
         return views;
     }
@@ -129,6 +150,16 @@ public final class DashboardApi {
                 current == null ? null : current.target().name(),
                 player.version().id(),
                 (System.currentTimeMillis() - player.connectedAt()) / 1000);
+    }
+
+    private static Load load(BackendStats stats) {
+        if (stats == null) {
+            return null;
+        }
+        return new Load(stats.tps1m(), stats.tps5m(), stats.tps15m(), stats.msptMean(),
+                stats.usedMemory() < 0 ? -1 : stats.usedMemory() / (1024 * 1024),
+                stats.maxMemory() < 0 ? -1 : stats.maxMemory() / (1024 * 1024),
+                stats.cpuLoad(), stats.uptimeSeconds(), !stats.isFresh(), stats.ageSeconds());
     }
 
     /** @return the group this backend belongs to, or {@code null} if it is on its own */

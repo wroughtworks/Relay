@@ -68,6 +68,7 @@ and `GetGroups` is asked separately.
 |---|---|---|
 | `Connect` | server \| group | Moves the sending player |
 | `ConnectOther` | player, server \| group | Moves a named player |
+| `ServerStats` | see below | Reports this backend's load *(Relay only)* |
 | `Message` / `MessageRaw` | player \| `ALL`, json | Sends chat |
 | `KickPlayer` | player, reason json | Disconnects a player |
 
@@ -85,6 +86,29 @@ The reply arrives asynchronously on the same channel, beginning with the sub-cha
 | `IP` | — | address, port *(int)* |
 | `UUID` | — | undashed uuid |
 | `UUIDOther` | player | player, undashed uuid |
+
+### Reporting load
+
+`ServerStats` is the one message the proxy never asks for. It cannot: a plugin message
+needs a player connection to travel on, so a poll would only arrive when a player was
+already there — and the reply could only leave under the same condition. The backend
+pushes instead, on a timer.
+
+Fields, in order: `tps1m`, `tps5m`, `tps15m`, `msptMean` *(doubles)*, `usedMemory`,
+`maxMemory` *(longs, bytes)*, `cpuLoad` *(double, fraction of one core)*, `players`
+*(int)*, `uptimeSeconds` *(long)*, `version` *(string)*. Anything unavailable is `-1`.
+
+**Field order is the contract.** New fields go on the end, so a proxy a version behind
+reads what it understands and stops rather than misreading everything after the point
+where the two disagree.
+
+Sent on `relay:main`, not the BungeeCord channel — nothing about it is BungeeCord
+compatible, and a BungeeCord proxy would log an unknown sub-channel every interval.
+
+**An empty backend cannot report.** Its last figures stop being replaced rather than
+going to zero, so the proxy stamps each report with its arrival time and the dashboard
+greys them once stale. The Relay plugin does this for you; `stats-interval-seconds: 0`
+in its config turns it off.
 
 ### Cross-server messaging
 

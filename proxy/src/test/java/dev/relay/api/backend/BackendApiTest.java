@@ -3,6 +3,7 @@ package dev.relay.api.backend;
 import dev.relay.config.ConfigLoader;
 import dev.relay.protocol.ProtocolUtils;
 import dev.relay.protocol.ProtocolVersion;
+import dev.relay.health.BackendStats;
 import dev.relay.proxy.RelayProxy;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -238,6 +240,60 @@ class BackendApiTest {
     }
 
     /** Joins a player, sends one API request from the backend, and returns the reply. */
+    /**
+     * A backend's self-reported load reaches the proxy and is attributed to it.
+     *
+     * <p>This is the one API message the proxy never asks for, and the only one whose
+     * sender is a plugin that may be a version behind. The field order is the contract,
+     * so it is worth a test that reads it end to end rather than trusting both sides to
+     * have been written from the same list.
+     */
+    @Test
+    void serverStatsAreRecordedAgainstTheReportingBackend(@TempDir Path dir) throws Exception {
+        Client client = join(dir);
+        try {
+            sendApiRequest(BackendApi.RELAY_CHANNEL, out -> {
+                out.writeUTF("ServerStats");
+                out.writeDouble(19.8);
+                out.writeDouble(19.9);
+                out.writeDouble(20.0);
+                out.writeDouble(31.5);
+                out.writeLong(512L * 1024 * 1024);
+                out.writeLong(2048L * 1024 * 1024);
+                out.writeDouble(0.42);
+                out.writeInt(3);
+                out.writeLong(7200);
+                out.writeUTF("Paper 1.20.2");
+            });
+
+            BackendStats stats = awaitStats("lobby");
+            assertEquals(19.8, stats.tps1m(), 0.0001);
+            assertEquals(31.5, stats.msptMean(), 0.0001);
+            assertEquals(0.42, stats.cpuLoad(), 0.0001);
+            assertEquals(3, stats.players());
+            assertEquals("Paper 1.20.2", stats.version());
+            assertTrue(stats.isFresh(), "a report that just arrived is not stale");
+
+            // Attributed to the connection it came in on, never to a name in the payload:
+            // a backend must not be able to file figures under another server.
+            assertNull(proxy.server("survival").orElseThrow().stats(),
+                    "only the reporting backend should have stats");
+        } finally {
+            client.socket().close();
+        }
+    }
+
+    private BackendStats awaitStats(String server) throws InterruptedException {
+        for (int i = 0; i < 100; i++) {
+            BackendStats stats = proxy.server(server).orElseThrow().stats();
+            if (stats != null) {
+                return stats;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError(server + " never recorded any stats");
+    }
+
     private DataInputStream exchange(Path dir, Request request) throws Exception {
         Client client = join(dir);
         try {

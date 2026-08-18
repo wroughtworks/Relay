@@ -23,6 +23,7 @@ public final class RelayPlugin extends JavaPlugin {
 
     private ConnectionInspector inspector;
     private BackendApiProbe probe;
+    private StatsReporter statsReporter;
 
     @Override
     public void onEnable() {
@@ -46,6 +47,16 @@ public final class RelayPlugin extends JavaPlugin {
             getCommand(name).setTabCompleter(proxyCommand);
         }
 
+        // Load figures the proxy cannot measure from outside: a server deep in a GC
+        // spiral still answers status pings perfectly well.
+        int statsInterval = getConfig().getInt("stats-interval-seconds", 5);
+        if (statsInterval > 0) {
+            statsReporter = new StatsReporter(this, probe.api(), statsInterval);
+            statsReporter.start();
+            getLogger().info("Reporting TPS, MSPT, memory and CPU to the proxy every "
+                    + statsInterval + "s, whenever a player is online to carry it.");
+        }
+
         getLogger().info("Watching player connections for unexplained closes.");
         if (logPackets) {
             getLogger().warning("log-packets is on: this is extremely verbose, for short "
@@ -60,6 +71,9 @@ public final class RelayPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (statsReporter != null) {
+            statsReporter.stop();
+        }
         if (inspector != null) {
             inspector.detachAll();
         }

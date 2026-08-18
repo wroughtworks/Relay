@@ -39,6 +39,8 @@ commands that reach the proxy by plugin message. See
 - **Health checks**: every backend status-pinged on an interval, so a dead one leaves
   routing before a player is sent to it — with hysteresis, so one dropped packet does not
   empty a server
+- **Backend load**: TPS, MSPT, heap and CPU pushed by the Relay plugin, because a server
+  deep in a GC spiral still answers status pings perfectly well
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
@@ -221,7 +223,7 @@ dashboard that needs a CDN to render fails exactly when someone is diagnosing an
 | | |
 |---|---|
 | `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
-| `GET /api/servers` | each backend: address, group, health, latency, version, and its own player count |
+| `GET /api/servers` | each backend: address, group, health, latency, version, its own player count, and a `load` object with TPS, MSPT, heap and CPU |
 | `GET /api/groups` | each group, its members, and its total |
 | `GET /api/players` | who is online and which backend they are on |
 | `WS /api/events` | one socket carrying every event type |
@@ -237,6 +239,12 @@ connection or edits config, which is what makes it reasonable to run before spec
 authentication exists. For the same reason player records carry **no IP address**: saying
 who is online is one thing, pairing usernames with home addresses on an unauthenticated
 port is another. Addresses arrive with the login that guards them.
+
+`load` is null until the Relay plugin reports, and carries `stale` once it stops. The
+proxy cannot measure these from outside, and cannot ask for them either: a plugin message
+needs a player connection to travel on, so the backend pushes them on a timer. **An empty
+backend therefore reports nothing** — its last figures stop being replaced rather than
+going to zero, which is why every report is stamped with its age.
 
 Relay warns at startup if you bind it anywhere but loopback. Until there is auth, reach
 it over an SSH tunnel.

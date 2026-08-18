@@ -15,3 +15,16 @@ log-packets: false
 # Run the read-only backend API checks automatically when a player joins, and
 # print what came back. Read-only: nothing here moves a player or changes state.
 probe-on-join: true
+
+# How often to report this server's own load to the proxy --- TPS, MSPT, heap
+# and CPU --- so the dashboard can show them. 0 disables it.
+#
+# The proxy cannot measure these from outside: a server deep in a GC spiral
+# answers status pings perfectly well. It also cannot ask for them, because a
+# plugin message needs a player connection to travel on, so this is a push.
+#
+# The same limitation means an empty server reports nothing. Its last figures
+# stop being replaced rather than going to zero, and the proxy stamps each
+# report with the time it arrived so a quiet server is not mistaken for a
+# frozen one.
+stats-interval-seconds: 5
