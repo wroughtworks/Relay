@@ -47,6 +47,11 @@ final class BackendApiProbe implements PluginMessageListener {
                 "GetServer", "GetServers", "PlayerCount", "PlayerList", "IP", "UUID");
 
         plugin.report("--- backend API probe, as " + carrier.getName() + " ---");
+        // Bukkit only transmits on channels the connection has registered, and silently
+        // drops the message otherwise. Printing the set turns "no reply" into either
+        // "the proxy never answered" or "the request never left this server".
+        plugin.report("  channels this connection registered: "
+                + carrier.getListeningPluginChannels());
         api.requestServerName(carrier);
         api.requestServers(carrier);
         api.requestPlayerCount(carrier, "ALL");

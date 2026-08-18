@@ -823,6 +823,14 @@ def stop_backend(name: str, force: bool = False, timeout: float = 60.0) -> int:
 
 
 def write_paper_debug_config(target: Path) -> None:
+    """
+    Writes a log4j2 config that turns on Paper's packet-level logging.
+
+    Keeps a file appender alongside the console one. A console-only config looks
+    fine while you are watching the window, but the output vanishes with the tab
+    and cannot be read back afterwards --- which is useless for the very case
+    this exists to diagnose.
+    """
     target.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
 <Configuration status="WARN">
@@ -830,12 +838,24 @@ def write_paper_debug_config(target: Path) -> None:
     <Console name="Console" target="SYSTEM_OUT">
       <PatternLayout pattern="[%d{HH:mm:ss} %level]: %msg%n%throwable"/>
     </Console>
+    <!-- Kept so the trace survives the window being closed. -->
+    <RollingRandomAccessFile name="File" fileName="logs/latest.log"
+                             filePattern="logs/%d{yyyy-MM-dd}-%i.log.gz">
+      <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level]: %msg%n%throwable"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy/>
+        <OnStartupTriggeringPolicy/>
+      </Policies>
+    </RollingRandomAccessFile>
   </Appenders>
   <Loggers>
     <!-- Packet-level tracing, plus the pipeline exceptions Paper otherwise swallows. -->
     <Logger name="net.minecraft.network" level="DEBUG"/>
     <Logger name="io.netty" level="DEBUG"/>
-    <Root level="INFO"><AppenderRef ref="Console"/></Root>
+    <Root level="INFO">
+      <AppenderRef ref="Console"/>
+      <AppenderRef ref="File"/>
+    </Root>
   </Loggers>
 </Configuration>
 """,

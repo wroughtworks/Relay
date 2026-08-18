@@ -13,11 +13,18 @@ portable.
 
 ## Channels
 
-| Channel | Purpose |
-|---|---|
-| `bungeecord:main` | The standard channel. Use this. |
-| `BungeeCord` | The pre-1.13 name, still accepted for old plugins. |
-| `relay:main` | Relay's own, for behaviour BungeeCord never had. |
+On the wire, Relay accepts `bungeecord:main`, the pre-1.13 name `BungeeCord`, and its own
+`relay:main`.
+
+**From a Bukkit plugin, use the string `"BungeeCord"`.** Not `bungeecord:main` — that
+looks more modern and silently does not work. Bukkit rewrites `bungeecord:main` to
+`BungeeCord` when recording what a connection has registered, but does *not* rewrite the
+argument to `sendPluginMessage` before checking that set, so the lookup misses and the
+message is dropped with no error anywhere. Every BungeeCord plugin uses the legacy string
+for this reason. It still travels as `bungeecord:main` on the wire; Bukkit converts it
+back on the way out.
+
+`relay:main` is unaffected and can be used either way.
 
 Enabled by `backend-api = true` in `relay.toml` (the default).
 
@@ -94,14 +101,14 @@ ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 DataOutputStream out = new DataOutputStream(bytes);
 out.writeUTF("Connect");
 out.writeUTF("survival");
-player.sendPluginMessage(this, "bungeecord:main", bytes.toByteArray());
+player.sendPluginMessage(this, "BungeeCord", bytes.toByteArray());
 ```
 
 Register the channels in `onEnable`:
 
 ```java
-getServer().getMessenger().registerOutgoingPluginChannel(this, "bungeecord:main");
-getServer().getMessenger().registerIncomingPluginChannel(this, "bungeecord:main", listener);
+getServer().getMessenger().registerOutgoingPluginChannel(this, "BungeeCord");
+getServer().getMessenger().registerIncomingPluginChannel(this, "BungeeCord", listener);
 ```
 
 `RelayApi`, shipped in the Relay plugin, wraps the common operations if you would rather

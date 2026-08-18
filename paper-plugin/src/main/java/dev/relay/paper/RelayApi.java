@@ -37,8 +37,19 @@ import java.io.IOException;
  */
 public final class RelayApi {
 
-    /** The channel to register. Relay also accepts Relay's own {@code relay:main}. */
-    public static final String CHANNEL = "bungeecord:main";
+    /**
+     * The channel to register with Bukkit.
+     *
+     * <p>Deliberately the legacy name. Bukkit rewrites {@code bungeecord:main} to
+     * {@code BungeeCord} when it records what a connection has registered, but does not
+     * rewrite the argument to {@code sendPluginMessage} before checking that set --- so
+     * passing the modern name means the lookup misses and the message is dropped with no
+     * error at all. Every BungeeCord plugin uses this string for the same reason.
+     *
+     * <p>On the wire it still travels as {@code bungeecord:main}; Bukkit converts it
+     * back on the way out.
+     */
+    public static final String CHANNEL = "BungeeCord";
 
     /** Relay's own channel, for behaviour BungeeCord never had. */
     public static final String RELAY_CHANNEL = "relay:main";
