@@ -106,11 +106,30 @@ proxy-protocol-send = false
 # See docs/client-api.md for the wire format.
 client-api = true
 
+
+# ----------------------------------------------------------------- backend api
+#
+# Lets a plugin on a backend server talk to the proxy over plugin messages, the
+# way BungeeCord has always worked: move players between servers, ask who is
+# online where, send cross-server messages, and relay custom payloads.
+#
+# Wire-compatible with BungeeCord's "bungeecord:main" channel, so a plugin
+# written for BungeeCord or Velocity works unchanged. Relay's own "relay:main"
+# channel is accepted too.
+#
+# Backends are trusted: unlike the client API, these requests are not permission
+# checked, because a backend already holds the forwarding secret. Keep backend
+# ports unreachable from outside your network.
+backend-api = true
+
+# ----------------------------------------------------------------- diagnostics
+
 # Record what closes each connection, with a stack trace naming the code that did
-# it. Diagnostic only -- turn it on when a connection is dying for no stated
-# reason, since "the peer hung up" and "something here hung up" are otherwise
-# indistinguishable once the socket is gone.
-trace-closes = false
+# it. On by default: it costs one handler per connection and logs only when a
+# connection ends, and the alternative is a close that leaves no trace of who
+# caused it -- exactly the situation where it is needed and too late to enable.
+# The detail appears at DEBUG; failed writes and pipeline faults warn regardless.
+trace-closes = true
 
 
 # Read a PROXY header from incoming connections. Only for when something sits in

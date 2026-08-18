@@ -4,8 +4,9 @@ A custom Minecraft proxy in Java — a BungeeCord/Velocity alternative built to 
 in [`relay-proxy-dashboard-spec.md`](relay-proxy-dashboard-spec.md).
 
 This repository currently contains **phase 1 (MVP)** of the plan in §10: the protocol
-layer, status/login/play relay, configuration, server switching, and both forwarding
-modes. No dashboard, no plugin system — those are phases 2 and 3.
+layer, status/login/play relay, configuration, server switching, both forwarding modes,
+and plugin-message APIs in both directions. No dashboard, no in-proxy plugin loader —
+those are phases 2 and 3.
 
 ## Status
 
@@ -32,6 +33,10 @@ configuration, and sustained play traffic in both directions. See
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
 - **Commands**: `/server`, `/glist`, `/find`, `/send`, with permission nodes
+- **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
+  work unchanged — see [docs/backend-api.md](docs/backend-api.md)
+- **Client API**: a plugin-message protocol for client-side mods —
+  see [docs/client-api.md](docs/client-api.md)
 - **Operations**: backpressure both directions, bounded buffers, graceful shutdown
 
 ## Requirements
@@ -75,16 +80,18 @@ py relay.py up      # start every backend, wait for their ports, then run the pr
 py relay.py down    # stop all of it
 ```
 
-`up` gives every backend **its own console window**, so their output can be watched side
-by side while this terminal runs the proxy. Those windows are real consoles, not log
-tails: `stop` and any other server command can be typed straight into them.
+`up` puts every backend in **its own tab of a single Windows Terminal window**, so their
+output can be watched without covering the screen while this terminal runs the proxy.
+Navigate with `Ctrl+Tab`. Those tabs are real consoles, not log tails: `stop` and any
+other server command can be typed straight into them.
 
 Individually:
 
 | | |
 |---|---|
 | `start lobby` | takes over this terminal |
-| `start lobby --console` | its own window (automatic when starting several) |
+| `start lobby --tabs` | a tab in the shared window (automatic when starting several) |
+| `start lobby --console` | a separate window of its own |
 | `start lobby --background` | detached, logging to `.relay-run/`, nothing to type into |
 | `start lobby --debug` | adds Paper's packet logging |
 
@@ -120,10 +127,10 @@ Build a standalone jar:
 ./gradlew build
 ```
 
-The shaded jar lands in `build/libs/relay-<version>.jar`:
+The shaded jar lands in `proxy/build/libs/proxy-<version>.jar`:
 
 ```bash
-java -jar build/libs/relay-0.1.0-SNAPSHOT.jar --config relay.toml
+java -jar proxy/build/libs/proxy-0.1.0-SNAPSHOT.jar --config relay.toml
 ```
 
 ## Configuring backends

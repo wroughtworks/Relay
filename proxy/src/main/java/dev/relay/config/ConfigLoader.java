@@ -107,6 +107,7 @@ public final class ConfigLoader {
         boolean proxyProtocolReceive = config.getOrElse("proxy-protocol-receive", Boolean.FALSE);
         boolean proxyProtocolSend = config.getOrElse("proxy-protocol-send", Boolean.FALSE);
         boolean clientApiEnabled = config.getOrElse("client-api", Boolean.TRUE);
+        boolean backendApiEnabled = config.getOrElse("backend-api", Boolean.TRUE);
         // On by default: it costs one handler per connection and logs only when a
         // connection ends, and the alternative is a close that leaves no trace of who
         // caused it -- which is exactly the situation where it is needed and too late
@@ -136,7 +137,7 @@ public final class ConfigLoader {
         return new RelayConfig(path.toAbsolutePath(),
                 bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
-                interceptCommands, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, traceCloses,
+                interceptCommands, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
                 servers, tryOrder, forcedHosts, permissions, overrides);
     }
 

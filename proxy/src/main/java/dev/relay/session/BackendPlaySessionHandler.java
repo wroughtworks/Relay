@@ -1,5 +1,6 @@
 package dev.relay.session;
 
+import dev.relay.api.backend.BackendApiHandler;
 import dev.relay.net.SessionHandler;
 import dev.relay.protocol.Packet;
 import dev.relay.proxy.ConnectedPlayer;
@@ -25,6 +26,7 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     private final RelayProxy proxy;
     private final ServerConnection server;
     private final PacketTrail fromBackend = new PacketTrail();
+    private final BackendApiHandler api;
 
     /** Counted separately from received: a gap means packets were dropped, not relayed. */
     private long delivered;
@@ -32,10 +34,16 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     public BackendPlaySessionHandler(RelayProxy proxy, ServerConnection server) {
         this.proxy = proxy;
         this.server = server;
+        this.api = proxy.config().backendApiEnabled() ? new BackendApiHandler(proxy, server) : null;
     }
 
     @Override
     public void handleUnknown(ByteBuf frame) {
+        // Plugin messages the backend addresses to the proxy are claimed here rather
+        // than relayed on to the player, who has no use for proxy control traffic.
+        if (api != null && api.tryHandle(frame)) {
+            return;
+        }
         forward(frame);
     }
 

@@ -528,19 +528,33 @@ def pid_file(name: str) -> Path:
 
 
 def backend_pid(name: str) -> int | None:
-    """The recorded pid, if that process is still alive and still java."""
-    path = pid_file(name)
-    if not path.exists():
-        return None
-    try:
-        pid = int(path.read_text().strip())
-    except ValueError:
-        return None
+    """
+    The running process for this backend, if there is one.
+
+    Located by the marker stamped onto its command line rather than by a pid
+    file, because a terminal that opens tabs spawns the real java process as a
+    grandchild and the pid recorded at launch belongs to the launcher.
+    """
+    marker = f"{BACKEND_MARKER}{name}"
     for process in running_processes():
-        if process.pid == pid:
-            return pid
-    # Stale: the server exited without the file being cleaned up.
-    path.unlink(missing_ok=True)
+        # Exact match: a backend called "lobby" must not match "lobby2".
+        if marker in process.command:
+            tail = process.command.split(marker, 1)[1]
+            if not tail or tail[0] in " 	\"'":
+                return process.pid
+
+    path = pid_file(name)
+    if path.exists():
+        try:
+            pid = int(path.read_text().strip())
+        except ValueError:
+            pid = None
+        if pid is not None:
+            for process in running_processes():
+                if process.pid == pid:
+                    return pid
+        # Stale: the server exited without the file being cleaned up.
+        path.unlink(missing_ok=True)
     return None
 
 
@@ -557,10 +571,17 @@ def find_server_jar(directory: Path) -> Path | None:
 
 #: How a backend's console is presented.
 #:   foreground - takes over this terminal; only one server at a time
-#:   console    - its own window, so several servers can be watched at once and
-#:                each still accepts typed commands such as `stop`
+#:   tabs       - one Windows Terminal window, a tab per backend; navigate with
+#:                Ctrl+Tab, and each tab is a real console that accepts `stop`
+#:   console    - a separate window per backend
 #:   background - detached, output to a file, nothing to type into
-FOREGROUND, CONSOLE, BACKGROUND = "foreground", "console", "background"
+FOREGROUND, TABS, CONSOLE, BACKGROUND = "foreground", "tabs", "console", "background"
+
+#: Stamped onto every backend the script launches, so its process can be found
+#: again regardless of how it was started. A window title or a pid file does not
+#: survive being launched through a terminal that spawns the real process as a
+#: grandchild, but a system property is right there in the command line.
+BACKEND_MARKER = "-Drelay.backend="
 
 
 def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
@@ -589,7 +610,7 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
 
     java = entry.get("java", "java")
     memory = entry.get("memory", "2G")
-    command = [java, f"-Xmx{memory}"]
+    command = [java, f"-Xmx{memory}", f"{BACKEND_MARKER}{name}"]
     if debug:
         config = directory / "log4j2-debug.xml"
         if not config.exists():
@@ -607,6 +628,17 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
         # Takes over this terminal, giving the Paper console directly: typing
         # `stop` there shuts the server down properly and saves the world.
         return subprocess.run(command, cwd=directory).returncode
+
+    if mode == TABS:
+        if windows_terminal() is None:
+            print(Style.yellow("  Windows Terminal not found; opening a separate window instead"))
+            return start_backend(name, entry, debug, CONSOLE)
+        # One tab in the shared window. wt returns as soon as the tab is created,
+        # so the java process is a grandchild and is found by its marker rather
+        # than by the pid wt would report.
+        subprocess.Popen(open_tab_command(name, directory, command))
+        print(Style.green(f"'{name}' opened as a tab"))
+        return 0
 
     if mode == CONSOLE:
         if not IS_WINDOWS:
@@ -639,6 +671,29 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
     print(Style.dim(f"  log: {log}"))
     print(Style.dim("  detached, so there is nothing to type into; --console gives a window"))
     return 0
+
+
+def windows_terminal() -> str | None:
+    """Windows Terminal, which is what provides tabs. Ships with Windows 11."""
+    if not IS_WINDOWS:
+        return None
+    found = shutil.which("wt.exe") or shutil.which("wt")
+    if found:
+        return found
+    bundled = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "wt.exe"
+    return str(bundled) if bundled.exists() else None
+
+
+#: The shared window's name. `wt --window <name>` opens it if it does not exist
+#: and reuses it if it does, so every backend lands in the same window without
+#: this script having to track which tab was first.
+TAB_WINDOW = "relay"
+
+
+def open_tab_command(title: str, directory: Path, command: list[str]) -> list[str]:
+    """A `wt` invocation placing one server in a tab of the shared window."""
+    return [windows_terminal(), "--window", TAB_WINDOW,
+            "new-tab", "--title", title, "-d", str(directory)] + command
 
 
 def find_terminal_emulator() -> list[str] | None:
@@ -1015,12 +1070,17 @@ def cmd_start(args) -> int:
     if not names:
         return 1
 
-    mode = BACKGROUND if args.background else CONSOLE if args.console else FOREGROUND
+    mode = (BACKGROUND if args.background
+            else CONSOLE if args.console
+            else TABS if args.tabs
+            else FOREGROUND)
     if len(names) > 1 and mode == FOREGROUND:
         # This terminal can only host one server, so several have to go somewhere
-        # else rather than the command silently starting just the first.
-        print(Style.yellow("Starting several servers, so each gets its own console window."))
-        mode = CONSOLE
+        # else rather than the command silently starting just the first. Tabs keep
+        # them together where that is possible.
+        mode = TABS if windows_terminal() else CONSOLE
+        print(Style.yellow("Starting several servers, so they go into "
+                           + ("tabs of one window." if mode == TABS else "separate windows.")))
 
     entries = backends()
     code = 0
@@ -1048,9 +1108,13 @@ def cmd_up(args) -> int:
         print("  py relay.py link lobby <path-to-paper-server>")
         return 1
 
-    # Each backend gets its own window so its output can be watched and commands
-    # typed into it, while this terminal is left free for the proxy.
-    mode = BACKGROUND if args.background else CONSOLE
+    # Backends go into tabs of a single window so their output can be watched and
+    # commands typed into them without covering the screen, leaving this terminal
+    # free for the proxy.
+    mode = (BACKGROUND if args.background
+            else CONSOLE if args.windows
+            else TABS if windows_terminal()
+            else CONSOLE)
     heading("Starting backends")
     for name, entry in entries.items():
         start_backend(name, entry, args.debug, mode)
@@ -1350,7 +1414,7 @@ def main() -> int:
         epilog="""typical loop:
   py relay.py link lobby C:/mc/lobby   once, per backend
   py relay.py doctor                   catch the mismatches that fail silently
-  py relay.py up                       a console window per backend, then the proxy
+  py relay.py up                       a tab per backend in one window, then the proxy
   py relay.py down                     stop all of it
 
 other:
@@ -1381,8 +1445,10 @@ other:
     start = sub.add_parser("start", help="start a backend (or all of them)")
     start.add_argument("name", nargs="?", help="backend name, or 'all'")
     start.add_argument("--debug", action="store_true", help="enable Paper's packet logging")
+    start.add_argument("--tabs", action="store_true",
+                       help="one window, a tab per backend (default when starting several)")
     start.add_argument("--console", action="store_true",
-                       help="open its own console window (default when starting several)")
+                       help="a separate window per backend")
     start.add_argument("--background", action="store_true",
                        help="detach with output to a file; nothing to type into")
     start.set_defaults(func=cmd_start)
@@ -1396,8 +1462,10 @@ other:
     up = sub.add_parser("up", help="start every backend in its own window, then run the proxy")
     up.add_argument("--debug", action="store_true", help="enable Paper's packet logging too")
     up.add_argument("--timeout", type=float, default=90.0, help="seconds to wait per backend")
+    up.add_argument("--windows", action="store_true",
+                    help="a separate window per backend instead of tabs")
     up.add_argument("--background", action="store_true",
-                    help="no console windows; log backends to files instead")
+                    help="no consoles at all; log backends to files instead")
     up.add_argument("--build", action="store_true")
     up.add_argument("--quiet", action="store_true")
     up.set_defaults(func=cmd_up)

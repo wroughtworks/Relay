@@ -32,6 +32,7 @@ public record RelayConfig(
         boolean proxyProtocolReceive,
         boolean proxyProtocolSend,
         boolean clientApiEnabled,
+        boolean backendApiEnabled,
         boolean traceCloses,
         Map<String, ServerEntry> servers,
         List<String> tryOrder,
