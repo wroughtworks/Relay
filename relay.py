@@ -1532,6 +1532,114 @@ def cmd_status(args) -> int:
     return 0
 
 
+def dashboard_servers() -> list[dict] | None:
+    """The backend list from the dashboard, or None if it is not reachable."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    port = 8080
+    if CONFIG.exists():
+        try:
+            companions = load_toml(CONFIG).get("companions", {}) or {}
+            env = (companions.get("dashboard", {}) or {}).get("environment", {}) or {}
+            port = int(env.get("RELAY_DASHBOARD_PORT", port))
+        except Exception:
+            pass
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/servers", timeout=5) as response:
+            return _json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def cmd_fake(args) -> int:
+    """
+    Connects fake players, then reports where the proxy put them.
+
+    The tool holds the connections; this process prints the distribution
+    alongside it, because "where did they land" is the question being asked and
+    reading it off a dashboard by hand defeats the point.
+    """
+    jar = jar_path()
+    if jar is None or jar_is_stale():
+        print(Style.yellow("Building first."))
+        if run_gradle([":proxy:build"]) != 0:
+            return 1
+        jar = jar_path()
+    if jar is None:
+        print(Style.red("No jar found. Run `py relay.py build`."))
+        return 1
+
+    # Checked before anything connects: a proxy in online mode refuses every fake
+    # player identically, and forty copies of that is not a useful way to find out.
+    if CONFIG.exists():
+        try:
+            if load_toml(CONFIG).get("online-mode", True):
+                print(Style.red("online-mode = true in relay.toml."))
+                print("  Fake players cannot authenticate with Mojang. Set it to false,")
+                print("  restart the proxy, load test, then set it back.")
+                return 1
+        except Exception:
+            pass
+
+    if not relay_processes():
+        print(Style.red("Relay is not running. Start it with `py relay.py up`."))
+        return 1
+
+    command = ["java", "-cp", str(jar), "dev.relay.tools.FakePlayers",
+               "--host", args.host, "--port", str(args.port),
+               "--count", str(args.count), "--stagger", str(args.stagger)]
+
+    print(Style.dim("$ " + " ".join(command)))
+    process = subprocess.Popen(command, cwd=str(PROJECT))
+    try:
+        # Long enough for the staggered logins plus the switch each one makes.
+        time.sleep(args.count * args.stagger / 1000 + 6)
+        show_distribution()
+        print()
+        print("Holding them online. Ctrl+C to disconnect and stop.")
+        process.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    return 0
+
+
+def show_distribution() -> None:
+    servers = dashboard_servers()
+    if servers is None:
+        print()
+        print(Style.yellow("The dashboard is not reachable, so the distribution "
+                           "cannot be read. Try /glist in game."))
+        return
+
+    print()
+    heading("Where they landed")
+    total = sum(s.get("players", 0) for s in servers)
+    if total == 0:
+        print(Style.yellow("Nobody is on any backend."))
+        return
+
+    width = max(len(s.get("name", "")) for s in servers)
+    for server in servers:
+        count = server.get("players", 0)
+        share = count / total if total else 0
+        # A bar, because the question is whether the split is even and two columns
+        # of numbers make that surprisingly hard to see.
+        bar = "#" * round(share * 30)
+        state = server.get("status", "")
+        note = "" if state == "HEALTHY" else Style.yellow(f"  [{state.lower()}]")
+        print(f"  {server.get('name', ''):<{width}}  {count:>4}  {bar}{note}")
+    print(f"  {'total':<{width}}  {total:>4}")
+
+
 def cmd_ping(args) -> int:
     host, port = args.host, args.port
     if port is None:
@@ -1743,6 +1851,14 @@ other:
     ping.add_argument("--port", type=int, default=None)
     ping.add_argument("--protocol", type=int, default=764, help="client protocol to claim")
     ping.set_defaults(func=cmd_ping)
+
+    fake = sub.add_parser("fake", help="connect fake players and show where they land")
+    fake.add_argument("count", type=int, nargs="?", default=20, help="how many (default 20)")
+    fake.add_argument("--host", default="127.0.0.1")
+    fake.add_argument("--port", type=int, default=25565)
+    fake.add_argument("--stagger", type=int, default=150,
+                      help="milliseconds between connections (default 150)")
+    fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
     paper.add_argument("name")

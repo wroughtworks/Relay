@@ -138,6 +138,30 @@ rcon.port=25575
 rcon.password=something
 ```
 
+Balancing is the one feature a single connection cannot judge, so there is a crowd:
+
+```bash
+py relay.py fake 40
+```
+
+That connects forty real protocol clients through the proxy, then prints where they
+landed:
+
+```
+Where they landed
+-----------------
+  lobby          0
+  survival-00   21  ###############
+  survival-01   19  #############
+  total         40
+```
+
+They are genuine connections — a proxy cannot tell them from clients — but they measure
+**routing, not load**: a fake player never moves or loads a chunk, so a backend holding a
+hundred of them is barely working. The proxy must be in offline mode, since nothing here
+can authenticate with Mojang; `fake` checks that first and says so rather than letting
+forty logins fail identically.
+
 Other commands: `status`, `ping` (a real server-list ping, proving the proxy answers
 rather than merely listens), `build`, `stop`, `logs -f`, `test`, and `paper-debug <name>`
 which writes the log4j2 config that reveals Paper's packet-level logging.
