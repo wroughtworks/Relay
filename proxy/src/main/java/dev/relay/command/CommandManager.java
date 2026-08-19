@@ -1,5 +1,6 @@
 package dev.relay.command;
 
+import dev.relay.command.commands.DrainCommand;
 import dev.relay.command.commands.FindCommand;
 import dev.relay.command.commands.GlistCommand;
 import dev.relay.command.commands.SendCommand;
@@ -30,6 +31,7 @@ public final class CommandManager {
         register(new GlistCommand(proxy));
         register(new FindCommand(proxy));
         register(new SendCommand(proxy));
+        register(new DrainCommand(proxy));
     }
 
     public void register(Command command) {

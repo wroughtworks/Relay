@@ -26,6 +26,9 @@ commands:
   send:
     description: Move other players between backends.
     usage: /send <player|all|server:<name>> <target>
+  drain:
+    description: Stop sending new players to a backend before restarting it.
+    usage: /drain [server] [off]
   relay:
     description: Talk to the proxy over the backend API.
     usage: /relay [probe|connect <server>|forward <text>]

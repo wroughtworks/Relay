@@ -42,7 +42,7 @@ public final class RelayPlugin extends JavaPlugin {
         // gives them tab completion and a place in the client's command tree; chat
         // interception alone leaves them looking like unknown commands.
         ProxyCommand proxyCommand = new ProxyCommand(this, probe);
-        for (String name : new String[]{"server", "glist", "find", "send"}) {
+        for (String name : new String[]{"server", "glist", "find", "send", "drain"}) {
             getCommand(name).setExecutor(proxyCommand);
             getCommand(name).setTabCompleter(proxyCommand);
         }

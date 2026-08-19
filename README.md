@@ -44,7 +44,10 @@ commands that reach the proxy by plugin message. See
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
-- **Commands**: `/server`, `/glist`, `/find`, `/send`, group-aware, with permission nodes
+- **Commands**: `/server`, `/glist`, `/find`, `/send`, `/drain`, group-aware, with
+  permission nodes
+- **Draining**: take a backend out of rotation before restarting it, without moving anyone
+  already on it — Relay announces the moment it empties
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
 - **Client API**: a plugin-message protocol for client-side mods —

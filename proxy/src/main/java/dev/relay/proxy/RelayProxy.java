@@ -89,6 +89,13 @@ public final class RelayProxy {
             groups.put(name.toLowerCase(Locale.ROOT), new ServerGroup(name, resolved));
         });
         this.commands = new CommandManager(this);
+        // A drained backend is announced the instant its last player leaves, rather than
+        // up to a health-check interval later: that moment is the one an operator is
+        // actually waiting for before restarting it.
+        events.addListener(event -> {
+            dev.relay.command.commands.DrainCommand.announceIfDrained(event.from());
+            dev.relay.command.commands.DrainCommand.announceIfDrained(event.to());
+        });
         applyProtocolOverrides();
     }
 

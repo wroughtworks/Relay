@@ -86,6 +86,17 @@ public final class ServerCommand implements Command {
             return;
         }
 
+        // Refused rather than allowed as a last resort. Routing demotes a draining or
+        // failing backend so it is picked only when nothing else will do, which is right
+        // for a player who just needs somewhere -- but someone who typed its name is
+        // owed the reason instead of being quietly sent to a server about to restart.
+        if (!server.acceptsNewPlayers()) {
+            source.sendMessage(Component.text(server.name() + " is not accepting players ("
+                    + server.health().state().name().toLowerCase(java.util.Locale.ROOT) + ")",
+                    NamedTextColor.RED));
+            return;
+        }
+
         source.sendMessage(Component.text("Connecting to " + server.name() + "...", NamedTextColor.GRAY));
         new BackendConnector(proxy, player).connect(server).whenComplete((result, error) ->
                 player.connection().channel().eventLoop().execute(() -> report(player, server, result, error)));

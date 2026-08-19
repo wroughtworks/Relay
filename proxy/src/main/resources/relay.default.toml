@@ -306,6 +306,8 @@ survival = "127.0.0.1:25567"
 
 [permissions]
 default = ["relay.command.server", "relay.command.glist"]
+# Not granted by default: /find and /send move other people around, and
+# /drain takes a backend out of rotation before a restart.
 # Grant by username or by UUID:
 # "yourname" = ["relay.*"]
 # "00000000-0000-0000-0000-000000000000" = ["relay.command.send"]

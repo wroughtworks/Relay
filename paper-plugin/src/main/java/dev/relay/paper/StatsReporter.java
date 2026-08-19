@@ -130,20 +130,24 @@ final class StatsReporter {
     /**
      * Process CPU, as a fraction of one core.
      *
-     * <p>Read reflectively: {@code getProcessCpuLoad} lives on a
-     * {@code com.sun.management} interface that is present on every mainstream JVM but is
-     * not part of the standard API, and a server on a JVM without it should lose one
-     * number rather than fail to report at all.
+     * <p>Cast to {@code com.sun.management.OperatingSystemMXBean} rather than reflected
+     * at. The first version looked the method up on the object's own class, which is
+     * {@code com.sun.management.internal.OperatingSystemImpl} -- not exported by its
+     * module, so the lookup succeeds and the invoke throws. It failed silently and
+     * reported -1 on every JVM, which is indistinguishable from "this JVM cannot tell
+     * you", so nothing looked wrong until the number was read on a dashboard.
+     *
+     * <p>The interface is part of the JDK's {@code jdk.management} module and present on
+     * every mainstream JVM. The {@code instanceof} keeps a JVM without it costing one
+     * number rather than the whole report.
      */
     private double cpuLoad() {
-        try {
-            OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
-            Object value = os.getClass().getMethod("getProcessCpuLoad").invoke(os);
-            if (value instanceof Double load && load >= 0) {
-                return load;
-            }
-        } catch (ReflectiveOperationException | RuntimeException unsupported) {
-            // Not available on this JVM.
+        OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
+        if (os instanceof com.sun.management.OperatingSystemMXBean extended) {
+            double load = extended.getProcessCpuLoad();
+            // Negative means "not available yet": the first sample has no interval to
+            // measure against, so an idle server reports -1 once and a figure after that.
+            return load < 0 ? -1 : load;
         }
         return -1;
     }
