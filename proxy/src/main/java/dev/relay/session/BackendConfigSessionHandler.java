@@ -54,6 +54,14 @@ public final class BackendConfigSessionHandler implements SessionHandler {
 
         // Mid-game switch. Ask the client to leave play state; ClientPlaySessionHandler
         // fires the callback once it acknowledges.
+        //
+        // Marked as leaving before the request goes out, not after the reply comes back.
+        // A client switches its own decoder to configuration state the moment it sends
+        // the acknowledgement, and Relay cannot learn of that until the packet arrives --
+        // so anything the old backend sends in between would reach a client decoding it
+        // against the wrong state. A chunk read as configuration data is what produces
+        // "Index 37 out of bounds for length 9" on the client's disconnect screen.
+        player.setLeavingPlay(true);
         attempt.setClientReadyCallback(this::onClientReady);
         player.connection().write(StartConfigurationPacket.INSTANCE);
     }

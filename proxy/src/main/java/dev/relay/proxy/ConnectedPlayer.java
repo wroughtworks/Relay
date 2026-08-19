@@ -59,6 +59,17 @@ public final class ConnectedPlayer {
      */
     private volatile RegisteredServer lastArrival;
 
+    /**
+     * True from the moment this player is asked to leave play state until they arrive.
+     *
+     * <p>The client switches its own decoder to configuration the instant it sends the
+     * acknowledgement, which is before Relay can possibly know. Anything still arriving
+     * from the old backend after that point is decoded against the wrong state and
+     * corrupts the connection, so it must stop being forwarded when the request goes out
+     * rather than when the answer comes back.
+     */
+    private volatile boolean leavingPlay;
+
     public ConnectedPlayer(MinecraftConnection connection, GameProfile profile, ProtocolVersion version,
                            String virtualHost) {
         this.connection = connection;
@@ -199,6 +210,14 @@ public final class ConnectedPlayer {
 
     public void setLastArrival(RegisteredServer server) {
         this.lastArrival = server;
+    }
+
+    public boolean isLeavingPlay() {
+        return leavingPlay;
+    }
+
+    public void setLeavingPlay(boolean leaving) {
+        this.leavingPlay = leaving;
     }
 
     public boolean isActive() {

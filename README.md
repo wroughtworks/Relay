@@ -363,6 +363,12 @@ bug cannot pass.
 
 Joining works. These are the gaps between that and running a network on it.
 
+**Switching is timing-sensitive, and one window is now closed.** A client enters
+configuration state the moment it *sends* its acknowledgement, which is a network round
+trip before Relay can know. Play packets delivered in that window are decoded against the
+wrong state and kill the connection with a decoder exception. Relay now stops forwarding
+from the old backend when the request goes out rather than when the reply arrives.
+
 **Only 1.20.2 has been exercised for real.** Every id Relay uses at 1.20.2 is now
 confirmed — handshake, status, login and configuration against a live Paper server's own
 packet log, the serverbound play ids from live traffic, and the two switch ids by a real

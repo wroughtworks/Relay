@@ -94,6 +94,13 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     private void forward(Object msg) {
         ConnectedPlayer player = server.player();
         fromBackend.record(msg);
+        if (player.isLeavingPlay()) {
+            // The player has been asked to leave play state. Their client may already be
+            // decoding as configuration, so a play packet delivered now corrupts the
+            // connection. Dropped rather than queued: it is state the player is about to
+            // stop having, and the new backend will send its own.
+            return;
+        }
         if (player.connectedServer() == server && player.isActive()) {
             player.connection().relay(msg);
             delivered++;

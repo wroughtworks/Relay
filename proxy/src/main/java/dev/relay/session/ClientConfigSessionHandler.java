@@ -89,6 +89,8 @@ public final class ClientConfigSessionHandler implements SessionHandler {
 
         player.setConnectedServer(current);
         player.endConnect(current);
+        // Back in play, so backend traffic may flow again.
+        player.setLeavingPlay(false);
         current.markEstablished();
 
         player.connection().setSessionHandler(new ClientPlaySessionHandler(proxy, player));
