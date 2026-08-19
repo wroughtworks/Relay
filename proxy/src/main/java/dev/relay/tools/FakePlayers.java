@@ -53,7 +53,10 @@ public final class FakePlayers {
     private static final int SB_HANDSHAKE = 0x00;
     private static final int SB_LOGIN_START = 0x00;
     private static final int SB_LOGIN_ACK = 0x03;
+    private static final int SB_CONFIG_CLIENT_INFO = 0x00;
     private static final int SB_CONFIG_FINISH_ACK = 0x02;
+    /** Agreeing to leave play state, which is how a switch begins. */
+    private static final int SB_PLAY_CONFIG_ACK = 0x0B;
     /** Confirmed against a live Paper 1.20.2 log: {@code IN: [play:20]}. */
     private static final int SB_PLAY_KEEP_ALIVE = 0x14;
 
@@ -64,6 +67,8 @@ public final class FakePlayers {
     private static final int CB_SET_COMPRESSION = 0x03;
     private static final int CB_CONFIG_DISCONNECT = 0x01;
     private static final int CB_CONFIG_FINISH = 0x02;
+    /** The proxy asking the client back into configuration, to move it elsewhere. */
+    private static final int CB_PLAY_START_CONFIGURATION = 0x65;
 
     /** A keep-alive is a bare long, and nothing else clientbound is exactly this size. */
     private static final int KEEP_ALIVE_BYTES = 8;
@@ -94,7 +99,8 @@ public final class FakePlayers {
         }));
 
         for (int i = 0; i < options.count; i++) {
-            FakePlayer player = new FakePlayer(options, options.prefix + i, joined, failed, settled);
+            FakePlayer player = new FakePlayer(options, options.prefix + i, i == 0,
+                    joined, failed, settled);
             players.add(player);
             player.start();
             // Staggered, because a proxy that receives forty simultaneous logins is being
@@ -127,11 +133,16 @@ public final class FakePlayers {
 
         private volatile Socket socket;
         private volatile boolean closed;
+        /** Only the first player traces: forty timelines interleaved say nothing. */
+        private final boolean traced;
+        /** Counted so a flapping backend shows up as a player being passed around. */
+        private int switches;
 
-        FakePlayer(Options options, String username, AtomicInteger joined, AtomicInteger failed,
-                   CountDownLatch settled) {
+        FakePlayer(Options options, String username, boolean traced, AtomicInteger joined,
+                   AtomicInteger failed, CountDownLatch settled) {
             this.options = options;
             this.username = username;
+            this.traced = traced;
             this.joined = joined;
             this.failed = failed;
             this.settled = settled;
@@ -229,6 +240,23 @@ public final class FakePlayers {
         }
 
         private void configure(Stream stream) throws IOException {
+            // Client Information first, unprompted, exactly as a real client does. A
+            // backend that never receives it has a player it knows nothing about -- no
+            // locale, no view distance -- and Paper stops waiting quickly. The first
+            // version of this tool skipped it and every fake player was kicked within a
+            // second of joining, reported as a timeout.
+            ByteBuf info = Unpooled.buffer();
+            info.writeByte(SB_CONFIG_CLIENT_INFO);
+            ProtocolUtils.writeString(info, "en_gb");
+            info.writeByte(8);                        // view distance
+            ProtocolUtils.writeVarInt(info, 0);       // chat mode: enabled
+            info.writeBoolean(true);                  // chat colours
+            info.writeByte(0x7F);                     // every skin layer
+            ProtocolUtils.writeVarInt(info, 1);       // main hand: right
+            info.writeBoolean(false);                 // text filtering
+            info.writeBoolean(true);                  // visible in server listings
+            stream.write(info);
+
             while (true) {
                 ByteBuf frame = stream.read();
                 int id = ProtocolUtils.readVarInt(frame);
@@ -254,15 +282,36 @@ public final class FakePlayers {
          */
         private void play(Stream stream) throws IOException {
             long enteredPlay = System.currentTimeMillis();
-            boolean answered = false;
-            java.util.Map<Integer, Integer> sizes = new java.util.TreeMap<>();
 
             while (!closed) {
                 ByteBuf frame = stream.read();
                 int id = ProtocolUtils.readVarInt(frame);
                 int body = frame.readableBytes();
-                if (!answered) {
-                    sizes.merge((id << 8) | Math.min(body, 255), 1, Integer::sum);
+                long elapsed = System.currentTimeMillis() - enteredPlay;
+
+                // Tracing is the point of the flag: a keep-alive cannot be picked out of a
+                // join by size alone, because the first seconds are full of packets that
+                // happen to be eight bytes. What identifies it is arriving repeatedly,
+                // long after the join has gone quiet -- which only a timeline shows.
+                if (options.trace && traced) {
+                    System.out.printf("  %6.1fs  id=0x%-4s %4dB%n", elapsed / 1000.0,
+                            Integer.toHexString(id), body);
+                }
+
+                // Being moved. A fake player that ignores this sits in play state while
+                // the proxy waits for an acknowledgement that never comes -- connected to
+                // the proxy, on no backend at all, and counted in neither place. That is
+                // exactly how a first run reported twelve players online with every
+                // backend showing zero.
+                if (id == CB_PLAY_START_CONFIGURATION) {
+                    stream.write(Unpooled.buffer().writeByte(SB_PLAY_CONFIG_ACK));
+                    configure(stream);
+                    switches++;
+                    if (traced) {
+                        System.out.printf("  %6.1fs  moved to another backend (switch %d)%n",
+                                elapsed / 1000.0, switches);
+                    }
+                    continue;
                 }
 
                 if (body == KEEP_ALIVE_BYTES) {
@@ -270,26 +319,6 @@ public final class FakePlayers {
                     pong.writeByte(SB_PLAY_KEEP_ALIVE);
                     pong.writeLong(frame.readLong());
                     stream.write(pong);
-                    if (!answered) {
-                        answered = true;
-                        note("keep-alive is clientbound 0x" + Integer.toHexString(id)
-                                + "; answering with serverbound 0x"
-                                + Integer.toHexString(SB_PLAY_KEEP_ALIVE));
-                    }
-                    continue;
-                }
-
-                // A backend gives up on a silent client after about thirty seconds, so
-                // a player still unanswered at twenty-five is about to be kicked for a
-                // reason this tool can explain far better than the kick screen can.
-                if (!answered && System.currentTimeMillis() - enteredPlay > 25_000) {
-                    StringBuilder seen = new StringBuilder();
-                    sizes.forEach((key, count) -> seen.append(" 0x")
-                            .append(Integer.toHexString(key >> 8))
-                            .append('/').append(key & 0xFF).append("B x").append(count));
-                    note("no keep-alive recognised in 25s, so a timeout kick is imminent. "
-                            + "Nothing arrived with an 8-byte body. Packets seen (id/size):" + seen);
-                    answered = true;   // reported once; the run continues regardless
                 }
             }
         }
@@ -448,7 +477,8 @@ public final class FakePlayers {
         }
     }
 
-    private record Options(String host, int port, int count, long staggerMillis, String prefix) {
+    private record Options(String host, int port, int count, long staggerMillis, String prefix,
+                           boolean trace) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -456,6 +486,7 @@ public final class FakePlayers {
             int count = 20;
             long stagger = 150;
             String prefix = "Fake";
+            boolean trace = false;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -464,6 +495,7 @@ public final class FakePlayers {
                     case "--count" -> count = Integer.parseInt(args[++i]);
                     case "--stagger" -> stagger = Long.parseLong(args[++i]);
                     case "--prefix" -> prefix = args[++i];
+                    case "--trace" -> trace = true;
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -473,6 +505,8 @@ public final class FakePlayers {
                                   --count <n>        default 20
                                   --stagger <ms>     between connections, default 150
                                   --prefix <name>    default Fake
+                                  --trace            print every play packet the first
+                                                     player receives, with timings
 
                                 The proxy must have online-mode = false: these cannot
                                 authenticate with Mojang.""");
@@ -480,7 +514,7 @@ public final class FakePlayers {
                     }
                 }
             }
-            return new Options(host, port, count, stagger, prefix);
+            return new Options(host, port, count, stagger, prefix, trace);
         }
     }
 }
