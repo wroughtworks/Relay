@@ -1,5 +1,7 @@
 package dev.relay.tools;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import dev.relay.protocol.ProtocolVersion;
 import dev.relay.protocol.StateRegistry;
 import dev.relay.protocol.packet.config.ConfigDisconnectPacket;
@@ -9,87 +11,161 @@ import dev.relay.protocol.packet.play.ChatCommandPacket;
 import dev.relay.protocol.packet.play.ConfigurationAcknowledgedPacket;
 import dev.relay.protocol.packet.play.StartConfigurationPacket;
 import dev.relay.tools.FakePlayers.Ids;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.ToIntFunction;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
- * The fake client's packet ids, checked against Relay's.
+ * The fake client's packet ids, checked against the same source Relay's are.
  *
- * <p>Two hand-maintained tables describe the same protocol: {@link StateRegistry}, which is
- * what Relay speaks, and {@code FakePlayers.IDS}, which is what the load tool speaks. They
- * are kept separate on purpose &mdash; a fake client that read its ids out of the proxy it
- * is testing would agree with that proxy by construction, and a version where Relay's table
- * was wrong would sail through with every player connecting happily.
+ * <p>{@code FakePlayers} carries its own id table rather than reading {@link StateRegistry},
+ * so that a fake client cannot agree with the proxy it is testing by construction. That
+ * only helps if something checks it, and checking it against Relay would defeat the point
+ * twice over now that both tables are built from Mojang's packet reports &mdash; agreeing
+ * with each other would prove only that they were copied from the same place.
  *
- * <p>Separate tables only help if somebody compares them, which is this test. A
- * disagreement means one of the two is wrong, and which one is a question for the protocol
- * reference; either way it is a real finding rather than a merge artefact.
+ * <p>So both answer to the report instead. {@code MojangPacketReportTest} holds
+ * {@code StateRegistry} against it; this holds the fake client against it, including the
+ * five ids Relay has no opinion about at all &mdash; keep-alive both ways, the join
+ * teleport and its confirmation, and client information. Relay forwards those as opaque
+ * frames and never decodes them, so nothing else in this project would notice them
+ * changing, and every one of them is fatal to a fake player if wrong.
  *
- * <p>Only the overlap is checked. The tool needs several ids Relay has no opinion about
- * &mdash; keep-alive, the join teleport and its confirmation, client information &mdash;
- * because Relay forwards those as opaque frames and never decodes them. Those have no
- * second source here and rest on the live-server observations recorded in
- * {@code docs/protocol-ids.md}.
+ * <p>1.20.2 has no report &mdash; the provider did not exist yet &mdash; so its row is
+ * checked against {@code StateRegistry} on the packets they share, which is the weaker
+ * check the whole file used to be.
  */
 class FakeClientProtocolTest {
 
-    @Test
-    void theToolAndTheProxyAgreeOnEveryVersionTheToolClaims() {
-        for (Map.Entry<Integer, Ids> entry : FakePlayers.IDS.entrySet()) {
-            ProtocolVersion version = ProtocolVersion.byId(entry.getKey());
-            Ids ids = entry.getValue();
-            assertNotNull(version, "the tool claims protocol " + entry.getKey()
-                    + ", which Relay does not support at all");
+    /** What the tool calls each id, and what Mojang calls it. */
+    private static final Map<String, ToIntFunction<Ids>> FIELDS = new LinkedHashMap<>();
 
-            assertEquals(
-                    StateRegistry.CONFIGURATION.serverbound.idOf(FinishConfigurationAckPacket.class, version),
-                    ids.configFinishAck(),
-                    () -> mismatch(ids, "configuration finish acknowledgement"));
-            assertEquals(
-                    StateRegistry.CONFIGURATION.clientbound.idOf(FinishConfigurationPacket.class, version),
-                    ids.configFinish(),
-                    () -> mismatch(ids, "finish configuration"));
-            assertEquals(
-                    StateRegistry.CONFIGURATION.clientbound.idOf(ConfigDisconnectPacket.class, version),
-                    ids.configDisconnect(),
-                    () -> mismatch(ids, "configuration disconnect"));
-            assertEquals(
-                    StateRegistry.PLAY.serverbound.idOf(ConfigurationAcknowledgedPacket.class, version),
-                    ids.playConfigAck(),
-                    () -> mismatch(ids, "configuration acknowledged"));
-            assertEquals(
-                    StateRegistry.PLAY.serverbound.idOf(ChatCommandPacket.class, version),
-                    ids.playChatCommand(),
-                    () -> mismatch(ids, "chat command"));
-            assertEquals(
-                    StateRegistry.PLAY.clientbound.idOf(StartConfigurationPacket.class, version),
-                    ids.startConfiguration(),
-                    () -> mismatch(ids, "start configuration"));
+    static {
+        FIELDS.put("configuration/serverbound/minecraft:client_information", Ids::configClientInfo);
+        FIELDS.put("configuration/serverbound/minecraft:finish_configuration", Ids::configFinishAck);
+        FIELDS.put("configuration/clientbound/minecraft:disconnect", Ids::configDisconnect);
+        FIELDS.put("configuration/clientbound/minecraft:finish_configuration", Ids::configFinish);
+        FIELDS.put("play/serverbound/minecraft:configuration_acknowledged", Ids::playConfigAck);
+        FIELDS.put("play/serverbound/minecraft:keep_alive", Ids::playKeepAlive);
+        FIELDS.put("play/serverbound/minecraft:chat_command", Ids::playChatCommand);
+        FIELDS.put("play/serverbound/minecraft:accept_teleportation", Ids::playAcceptTeleport);
+        FIELDS.put("play/clientbound/minecraft:start_configuration", Ids::startConfiguration);
+        FIELDS.put("play/clientbound/minecraft:player_position", Ids::position);
+        FIELDS.put("play/clientbound/minecraft:keep_alive", Ids::keepAlive);
+    }
+
+    @TestFactory
+    Stream<DynamicTest> everyVersionWithAReportMatchesIt() {
+        List<DynamicTest> tests = new ArrayList<>();
+        for (Map.Entry<Integer, Ids> row : FakePlayers.IDS.entrySet()) {
+            JsonObject report = load(row.getKey());
+            if (report == null) {
+                continue;                       // checked against StateRegistry below
+            }
+            Ids ids = row.getValue();
+            for (Map.Entry<String, ToIntFunction<Ids>> field : FIELDS.entrySet()) {
+                String[] path = field.getKey().split("/");
+                JsonObject direction = report.getAsJsonObject(path[0]).getAsJsonObject(path[1]);
+                assertNotNull(direction, "report for " + ids.version() + " has no " + path[1]);
+                int mojang = direction.getAsJsonObject(path[2]).get("protocol_id").getAsInt();
+                int tool = field.getValue().applyAsInt(ids);
+                String name = ids.version() + " " + field.getKey();
+                tests.add(DynamicTest.dynamicTest(name, () -> assertEquals(mojang, tool,
+                        () -> String.format("%s: the report says 0x%02X, the fake client "
+                                + "sends 0x%02X. The report is generated by the server "
+                                + "itself and is right.", name, mojang, tool))));
+            }
         }
+        assertFalse(tests.isEmpty(), "no version in the fake client's table has a report to check");
+        return tests.stream();
     }
 
     /**
-     * The floor is present, so the tool is never silently unable to test anything.
+     * The floor, which has no report, checked against Relay instead.
      *
-     * <p>A load tool whose table is empty still starts, still prints a distribution, and
-     * still says nothing &mdash; which is the failure mode worth a test of its own.
+     * <p>Weaker on purpose and unavoidably so: two hand-maintained tables agreeing is worth
+     * something, but far less than either agreeing with the server. 1.20.2's ids came off a
+     * live Paper debug log, which is the next best source and how the last two id bugs in
+     * this project were found.
      */
     @Test
-    void theOldestSupportedVersionIsAlwaysDriveable() {
-        assertFalse(FakePlayers.IDS.isEmpty(), "the fake client can no longer speak any version");
-        assertNotNull(FakePlayers.IDS.get(ProtocolVersion.oldest().id()),
-                "the fake client cannot speak " + ProtocolVersion.oldest().displayName()
-                        + ", which is the version every other test and every live check uses");
+    void theFloorAgreesWithRelay() {
+        ProtocolVersion version = ProtocolVersion.oldest();
+        Ids ids = FakePlayers.IDS.get(version.id());
+        assertNotNull(ids, "the fake client cannot speak " + version.displayName()
+                + ", which is the version every live check uses");
+
+        assertEquals(StateRegistry.CONFIGURATION.serverbound
+                        .idOf(FinishConfigurationAckPacket.class, version),
+                ids.configFinishAck(), mismatch(ids, "configuration finish acknowledgement"));
+        assertEquals(StateRegistry.CONFIGURATION.clientbound
+                        .idOf(FinishConfigurationPacket.class, version),
+                ids.configFinish(), mismatch(ids, "finish configuration"));
+        assertEquals(StateRegistry.CONFIGURATION.clientbound
+                        .idOf(ConfigDisconnectPacket.class, version),
+                ids.configDisconnect(), mismatch(ids, "configuration disconnect"));
+        assertEquals(StateRegistry.PLAY.serverbound
+                        .idOf(ConfigurationAcknowledgedPacket.class, version),
+                ids.playConfigAck(), mismatch(ids, "configuration acknowledged"));
+        assertEquals(StateRegistry.PLAY.serverbound.idOf(ChatCommandPacket.class, version),
+                ids.playChatCommand(), mismatch(ids, "chat command"));
+        assertEquals(StateRegistry.PLAY.clientbound.idOf(StartConfigurationPacket.class, version),
+                ids.startConfiguration(), mismatch(ids, "start configuration"));
+    }
+
+    /**
+     * Every version Relay claims should be driveable, or knowingly not.
+     *
+     * <p>Not an assertion that the table is complete &mdash; 1.20.3 and 1.20.6 have no
+     * report and are deliberately absent. It is an assertion that the gap is exactly the
+     * documented one, so a version quietly falling out of the table is noticed.
+     */
+    @Test
+    void onlyTheVersionsWithoutAReportAreMissing() {
+        List<String> missing = new ArrayList<>();
+        for (ProtocolVersion version : ProtocolVersion.values()) {
+            if (!FakePlayers.IDS.containsKey(version.id())) {
+                missing.add(version.displayName());
+            }
+        }
+        assertEquals(List.of(ProtocolVersion.MINECRAFT_1_20_3.displayName(),
+                        ProtocolVersion.MINECRAFT_1_20_5.displayName()),
+                missing,
+                "the fake client should speak every version except the two Mojang published "
+                        + "no packet report for. See docs/protocol-ids.md.");
     }
 
     private static String mismatch(Ids ids, String packet) {
         return "the fake client and Relay disagree about " + packet + " at " + ids.version()
-                + ". One of the two tables is wrong: check it against the protocol reference "
-                + "and docs/protocol-ids.md rather than making them match.";
+                + ". One of the two is wrong: check docs/protocol-ids.md rather than making "
+                + "them match.";
+    }
+
+    /** @return the trimmed report for this protocol, or {@code null} if there is none */
+    private static JsonObject load(int protocol) {
+        String path = "/protocol/packets-" + protocol + ".json";
+        try (InputStream in = FakeClientProtocolTest.class.getResourceAsStream(path)) {
+            if (in == null) {
+                return null;
+            }
+            return JsonParser.parseReader(new InputStreamReader(in, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+        } catch (Exception e) {
+            throw new AssertionError("could not read " + path, e);
+        }
     }
 }

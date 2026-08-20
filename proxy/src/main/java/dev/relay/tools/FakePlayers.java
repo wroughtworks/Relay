@@ -85,23 +85,55 @@ public final class FakePlayers {
     }
 
     /**
-     * Only versions whose ids have been read off a live server of that version.
+     * Only versions whose ids come from the server itself.
      *
-     * <p>Nothing is inferred into this table. The ids do usually shift by a predictable
-     * amount, and following the pattern would fill in eight more versions in a minute --
-     * but a plausible guess that is wrong produces a tool which reports a proxy bug that
-     * does not exist, and there is no worse outcome for a test tool than that. An absent
-     * version says "unverified" out loud; a guessed one says nothing at all.
+     * <p>Nothing is inferred into this table. From 1.21 the values are read out of
+     * Mojang's own packet report, which the server jar generates on demand:
+     *
+     * <pre>java -DbundlerMainClass=net.minecraft.data.Main -jar &lt;server&gt;.jar --reports</pre>
+     *
+     * <p>1.20.2 predates that report provider and was read off a live Paper debug log
+     * instead. 1.20.3&ndash;1.20.6 have neither and are therefore absent: an unsupported
+     * version is refused with an explanation, because a plausible guess that is wrong
+     * produces a tool which reports a proxy bug that does not exist, and there is no worse
+     * outcome for a test tool than that.
+     *
+     * <p>Guessing was not a hypothetical risk here. Relay's own table was inferred the same
+     * way and was wrong in 26 places once it was finally checked against these reports.
      */
-    static final Map<Integer, Ids> IDS = Map.of(
-            // Every value below read from a live Paper 1.20.2 debug packet log, e.g.
+    static final Map<Integer, Ids> IDS = Map.ofEntries(
+            // Read off a live Paper 1.20.2 debug packet log, e.g.
             // OUT: [play:62] PacketPlayOutPosition, IN: [play:20] keep-alive.
-            ProtocolVersion.MINECRAFT_1_20_2.id(), new Ids("1.20.2",
-                    0x00, 0x02,
-                    0x01, 0x02,
-                    0x0B, 0x14, 0x04,
-                    0x00,
-                    0x65, 0x3E, 0x24));
+            Map.entry(ProtocolVersion.MINECRAFT_1_20_2.id(), new Ids("1.20.2",
+                    0x00, 0x02, 0x01, 0x02,
+                    0x0B, 0x14, 0x04, 0x00,
+                    0x65, 0x3E, 0x24)),
+            // The rest from packets.json, one report per protocol version. The release
+            // named is the build the ids were read from, not the only one they cover.
+            Map.entry(ProtocolVersion.MINECRAFT_1_21.id(), new Ids("1.21.1",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0C, 0x18, 0x04, 0x00,
+                    0x69, 0x40, 0x26)),
+            Map.entry(ProtocolVersion.MINECRAFT_1_21_2.id(), new Ids("1.21.3",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0E, 0x1A, 0x05, 0x00,
+                    0x70, 0x42, 0x27)),
+            Map.entry(ProtocolVersion.MINECRAFT_1_21_4.id(), new Ids("1.21.4",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0E, 0x1A, 0x05, 0x00,
+                    0x70, 0x42, 0x27)),
+            Map.entry(ProtocolVersion.MINECRAFT_1_21_5.id(), new Ids("1.21.5",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0E, 0x1A, 0x05, 0x00,
+                    0x6F, 0x41, 0x26)),
+            Map.entry(ProtocolVersion.MINECRAFT_1_21_6.id(), new Ids("1.21.6",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0F, 0x1B, 0x06, 0x00,
+                    0x6F, 0x41, 0x26)),
+            Map.entry(ProtocolVersion.MINECRAFT_1_21_7.id(), new Ids("1.21.8",
+                    0x00, 0x03, 0x02, 0x03,
+                    0x0F, 0x1B, 0x06, 0x00,
+                    0x6F, 0x41, 0x26)));
 
     /** Position, three doubles and two floats, then flags, then the teleport id. */
     private static final int POSITION_PREFIX_BYTES = 8 * 3 + 4 * 2 + 1;
@@ -725,9 +757,18 @@ public final class FakePlayers {
                           packet, and guessing one produces a fake player that is kicked
                           within a second for reasons that look like a proxy bug.
 
-                          To add a version: run a backend of it under
-                          `py relay.py paper-debug <name>`, join once, and read the ids out
-                          of its packet log. Then add a row to IDS in this file.""");
+                          Normally a version is added from Mojang's own packet report:
+
+                            java -DbundlerMainClass=net.minecraft.data.Main \\
+                                 -jar <server>.jar --reports
+
+                          1.20.3 - 1.20.6 are the exception: Mojang added that report in
+                          1.21, so those two need a live backend under
+                          `py relay.py paper-debug <name>`, joined once with a real client
+                          of that version, and the ids read out of its packet log.
+
+                          Either way, add the row to IDS in this file. See
+                          docs/protocol-ids.md.""");
                 System.out.println("  verified so far: " + IDS.values().stream()
                         .map(Ids::version).sorted().toList());
                 return null;
