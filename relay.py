@@ -915,6 +915,133 @@ def wait_for_port(host: str, port: int, timeout: float) -> bool:
 # --------------------------------------------------------------------------- commands
 
 
+def stamp(path: Path) -> str:
+    """A file's mtime, in the format the rest of this script prints."""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+
+
+def installed_plugin(name: str) -> Path | None:
+    """The Relay plugin jar currently sitting in a backend's plugins folder."""
+    entry = backends().get(name)
+    if not entry:
+        return None
+    plugins = Path(entry["path"]) / "plugins"
+    if not plugins.is_dir():
+        return None
+    jars = sorted(plugins.glob("Relay-*.jar"), key=lambda q: q.stat().st_mtime, reverse=True)
+    return jars[0] if jars else None
+
+
+def check_live_stack(report: "Report") -> None:
+    """
+    Checks the stack that is running, rather than the config that describes it.
+
+    Everything else in doctor reads files. This reads reality, because the most
+    expensive failures this project has had were never wrong config -- they were
+    something stale that nothing reported: a proxy running a jar built before the
+    fix, a backend loading last week's plugin. Both present as "the feature does
+    not work" with no error anywhere.
+    """
+    heading("Running stack")
+
+    processes = relay_processes()
+    if not processes:
+        report.info("Relay is not running", "nothing else here can be checked")
+        return
+    report.ok(f"Relay is running (PID {processes[0].pid})")
+
+    jar = jar_path()
+    if jar is not None:
+        for process in processes:
+            # Process start time against jar mtime: a proxy started before its own
+            # jar was rebuilt is running code nobody can see, and fails later with a
+            # NoClassDefFoundError naming something deep in Netty.
+            if process.started and process.started < jar.stat().st_mtime:
+                report.warn("the running proxy predates its jar",
+                            f"{jar.name} was built after this process started",
+                            "py relay.py restart")
+                break
+        else:
+            report.ok("the running proxy matches the built jar")
+
+    port = 25565
+    try:
+        bind = str(load_toml(CONFIG).get("bind", ""))
+        if ":" in bind:
+            port = int(bind.rpartition(":")[2])
+    except Exception:
+        pass
+    if port_open("127.0.0.1", port, timeout=3):
+        report.ok(f"the listener answers on port {port}")
+    else:
+        report.fail(f"nothing is listening on {port}",
+                    "the proxy is running but its port is closed")
+
+    # The control channel and the dashboard, which only exist if configured.
+    try:
+        config = load_toml(CONFIG)
+    except Exception:
+        config = {}
+    control = config.get("control", {}) or {}
+    if control.get("enabled", True):
+        bind = str(control.get("bind", "127.0.0.1:25580"))
+        host, _, control_port = bind.rpartition(":")
+        if port_open(host or "127.0.0.1", int(control_port), timeout=3):
+            report.ok(f"the control channel is open on {bind}")
+        else:
+            report.fail(f"the control channel is not listening on {bind}",
+                        "companions cannot reach the proxy without it")
+
+    servers = dashboard_servers()
+    if servers is None:
+        if config.get("companions"):
+            report.warn("the dashboard is not answering",
+                        "it is configured as a companion but its API did not respond",
+                        "check the [dashboard] lines in the proxy log")
+    else:
+        report.ok(f"the dashboard is answering, and reports {len(servers)} backend(s)")
+        for server in servers:
+            state = server.get("status", "UNKNOWN")
+            label = f"backend '{server.get('name')}' is {state.lower()}"
+            if state in ("HEALTHY", "DEGRADED"):
+                report.ok(label, f"{server.get('latencyMillis')}ms, "
+                                 f"{server.get('players')} player(s)")
+            elif state == "DRAINING":
+                report.warn(label, f"{server.get('players')} player(s) still on it")
+            else:
+                report.fail(label, server.get("detail") or "not answering status pings")
+
+
+def check_plugin_freshness(report: "Report", names: list[str]) -> None:
+    """
+    Compares each backend's installed plugin against the one just built.
+
+    The plugin is not a diagnostic any more: it reports TPS and memory, registers
+    the proxy's commands, and carries the backend API. A backend running an old
+    copy therefore has features that silently differ from the proxy's, which is
+    indistinguishable from those features being broken.
+    """
+    built = plugin_jar_path()
+    if built is None:
+        return
+
+    heading("Backend plugins")
+    for name in names:
+        installed = installed_plugin(name)
+        if installed is None:
+            report.warn(f"'{name}' has no Relay plugin",
+                        "TPS and memory will not be reported, and the proxy's commands "
+                        "will not be registered on it",
+                        f"py relay.py plugin {name}")
+            continue
+        if installed.stat().st_mtime < built.stat().st_mtime - 1:
+            report.warn(f"'{name}' has an older Relay plugin",
+                        f"installed {stamp(installed)}, built {stamp(built)}",
+                        f"py relay.py shutdown {name} && py relay.py plugin {name}")
+        else:
+            report.ok(f"'{name}' has the current Relay plugin")
+
+
 def cmd_doctor(args) -> int:
     """Cross-check Relay's config against each backend's Paper config."""
     report = Report()
@@ -1073,6 +1200,12 @@ def cmd_doctor(args) -> int:
 
     for process in relay_processes():
         report.info(f"Relay is running as PID {process.pid}")
+
+    if getattr(args, "live", False):
+        print()
+        check_plugin_freshness(report, sorted(backends()))
+        print()
+        check_live_stack(report)
 
     print()
     return report.render()
@@ -1428,6 +1561,80 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def proxy_answers(timeout: float = 1.5) -> bool:
+    """
+    Whether a real server-list ping gets a reply.
+
+    status_ping raises rather than returning on failure, which is right for the
+    `ping` command -- an operator wants the reason -- and wrong for a poll, where
+    the only question is whether to wait longer.
+    """
+    port = 25565
+    try:
+        bind = str(load_toml(CONFIG).get("bind", ""))
+        if ":" in bind:
+            port = int(bind.rpartition(":")[2])
+    except Exception:
+        pass
+    try:
+        return status_ping("127.0.0.1", port, timeout=timeout) is not None
+    except Exception:
+        return False
+
+
+def wait_until_healthy(timeout: float = 60) -> bool:
+    """
+    Blocks until the proxy actually answers, not merely until it was started.
+
+    Started and ready are different states, and the gap between them is where
+    every sleep-then-check dance comes from. A real ping is the honest test: it
+    proves the listener is bound and the protocol layer is answering, which "the
+    process exists" does not.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proxy_answers():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def cmd_restart(args) -> int:
+    """
+    Stop, rebuild, start, and wait until it answers.
+
+    Three commands and a guess collapsed into one. The rebuild happens while
+    nothing is running, which makes replacing the jar under a live proxy -- the
+    cause of NoClassDefFoundErrors that read like proxy bugs -- unreachable
+    rather than merely warned about.
+    """
+    if relay_processes():
+        cmd_stop(args)
+
+    if not args.no_build:
+        heading("Building")
+        if run_gradle([":proxy:build", ":dashboard:build"]) != 0:
+            return 1
+
+    heading("Starting")
+    code = cmd_up(args)
+    if code != 0:
+        return code
+
+    print()
+    if wait_until_healthy():
+        print(Style.green("Relay is answering."))
+        servers = dashboard_servers()
+        if servers is not None:
+            up = sum(1 for x in servers if x.get("status") in ("HEALTHY", "DEGRADED"))
+            print(Style.dim(f"Dashboard is up; {up}/{len(servers)} backends healthy."))
+        return 0
+
+    print(Style.red("Relay did not answer within 60s."))
+    print(Style.dim("  py relay.py logs   to see why"))
+    return 1
+
+
 def cmd_build(args) -> int:
     # A running proxy holds the jar open, which makes `clean` fail on Windows
     # with an error that does not mention the proxy at all.
@@ -1775,8 +1982,10 @@ other:
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("doctor", help="cross-check Relay and backend configuration").set_defaults(
-        func=cmd_doctor)
+    doctor = sub.add_parser("doctor", help="cross-check Relay and backend configuration")
+    doctor.add_argument("--live", action="store_true",
+                        help="also check the running stack: ports, health, plugin freshness")
+    doctor.set_defaults(func=cmd_doctor)
 
     link = sub.add_parser("link", help="record a backend's Paper install")
     link.add_argument("name")
@@ -1851,6 +2060,12 @@ other:
     ping.add_argument("--port", type=int, default=None)
     ping.add_argument("--protocol", type=int, default=764, help="client protocol to claim")
     ping.set_defaults(func=cmd_ping)
+
+    restart = sub.add_parser("restart", help="stop, rebuild, start, and wait until it answers")
+    restart.add_argument("--no-build", action="store_true", help="skip the rebuild")
+    restart.add_argument("--no-shell", action="store_true", help="do not open the control console")
+    restart.add_argument("--timeout", type=int, default=60, help="seconds to wait for backends")
+    restart.set_defaults(func=cmd_restart)
 
     fake = sub.add_parser("fake", help="connect fake players and show where they land")
     fake.add_argument("count", type=int, nargs="?", default=20, help="how many (default 20)")
