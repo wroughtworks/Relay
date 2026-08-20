@@ -61,6 +61,8 @@ public final class FakePlayers {
     private static final int SB_PLAY_KEEP_ALIVE = 0x14;
     /** Unsigned chat command, which is how a fake player asks to be moved. */
     private static final int SB_PLAY_CHAT_COMMAND = 0x04;
+    /** Confirming the teleport a server performs on join. */
+    private static final int SB_PLAY_ACCEPT_TELEPORT = 0x00;
 
     // --- clientbound ---
     private static final int CB_LOGIN_DISCONNECT = 0x00;
@@ -71,8 +73,21 @@ public final class FakePlayers {
     private static final int CB_CONFIG_FINISH = 0x02;
     /** The proxy asking the client back into configuration, to move it elsewhere. */
     private static final int CB_PLAY_START_CONFIGURATION = 0x65;
+    /**
+     * The join teleport, confirmed against a live Paper 1.20.2 log
+     * ({@code OUT: [play:62] PacketPlayOutPosition}).
+     *
+     * <p>Answering it is what completes a join. A server that never receives the
+     * confirmation leaves the player unspawned, and an unspawned player is never sent a
+     * keep-alive -- which is why a silent fake client sat for ninety seconds without one
+     * and then died anyway.
+     */
+    private static final int CB_PLAY_POSITION = 0x3E;
 
-    /** A keep-alive is a bare long, and nothing else clientbound is exactly this size. */
+    /** Position, three doubles and two floats, then flags, then the teleport id. */
+    private static final int POSITION_PREFIX_BYTES = 8 * 3 + 4 * 2 + 1;
+
+    /** A keep-alive carries a bare long, which is necessary but nowhere near sufficient. */
     private static final int KEEP_ALIVE_BYTES = 8;
 
     private FakePlayers() {
@@ -139,6 +154,8 @@ public final class FakePlayers {
         private final boolean traced;
         /** Counted so a flapping backend shows up as a player being passed around. */
         private int switches;
+        /** Learned once, then the only id ever answered. -1 until the first one arrives. */
+        private int keepAliveId = -1;
 
         FakePlayer(Options options, String username, boolean traced, AtomicInteger joined,
                    AtomicInteger failed, CountDownLatch settled) {
@@ -319,7 +336,39 @@ public final class FakePlayers {
                     continue;
                 }
 
-                if (body == KEEP_ALIVE_BYTES) {
+                // The join teleport. Confirming it is not optional: until it is answered
+                // the server holds the player unspawned, sends no keep-alives, and
+                // eventually gives up on them.
+                if (id == CB_PLAY_POSITION && body > POSITION_PREFIX_BYTES) {
+                    frame.skipBytes(POSITION_PREFIX_BYTES);
+                    int teleportId = ProtocolUtils.readVarInt(frame);
+                    ByteBuf confirm = Unpooled.buffer();
+                    confirm.writeByte(SB_PLAY_ACCEPT_TELEPORT);
+                    ProtocolUtils.writeVarInt(confirm, teleportId);
+                    synchronized (this) {
+                        stream.write(confirm);
+                    }
+                    if (traced) {
+                        System.out.printf("  %6.1fs  confirmed teleport %d%n",
+                                elapsed / 1000.0, teleportId);
+                    }
+                    continue;
+                }
+
+                // Answering an unsolicited keep-alive is not a harmless mistake. Paper's
+                // handler treats a response it did not ask for as a timeout and kicks --
+                // which is what fake players were doing to themselves, answering entity
+                // metadata that happened to be eight bytes, within a second of joining.
+                boolean plausible = body == KEEP_ALIVE_BYTES
+                        && options.keepAliveId >= 0
+                        && id == options.keepAliveId;
+                if (plausible) {
+                    if (keepAliveId < 0) {
+                        keepAliveId = id;
+                        note("keep-alive is clientbound 0x" + Integer.toHexString(id)
+                                + "; answering with serverbound 0x"
+                                + Integer.toHexString(SB_PLAY_KEEP_ALIVE));
+                    }
                     ByteBuf pong = Unpooled.buffer();
                     pong.writeByte(SB_PLAY_KEEP_ALIVE);
                     pong.writeLong(frame.readLong());
@@ -530,7 +579,8 @@ public final class FakePlayers {
     }
 
     private record Options(String host, int port, int count, long staggerMillis, String prefix,
-                           boolean trace, long switchEvery, List<String> destinations) {
+                           boolean trace, long switchEvery, List<String> destinations,
+                           int keepAliveId) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -541,6 +591,12 @@ public final class FakePlayers {
             boolean trace = false;
             long switchEvery = 0;
             List<String> destinations = new ArrayList<>();
+            // Confirmed against a live Paper 1.20.2 log: OUT: [play:36]
+            // ClientboundKeepAlivePacket. Named rather than guessed, because guessing by
+            // packet size answered entity movement and entity metadata -- and a server
+            // treats a keep-alive response it did not ask for as a timeout, so a wrong
+            // guess is fatal within a second rather than merely useless.
+            int keepAliveId = 0x24;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -552,6 +608,7 @@ public final class FakePlayers {
                     case "--trace" -> trace = true;
                     case "--switch" -> switchEvery = Long.parseLong(args[++i]);
                     case "--to" -> destinations.add(args[++i]);
+                    case "--keepalive" -> keepAliveId = Integer.decode(args[++i]);
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -566,6 +623,8 @@ public final class FakePlayers {
                                   --switch <ms>      keep moving, roughly this often
                                   --to <name>        somewhere --switch may send them;
                                                      repeatable
+                                  --keepalive <id>   clientbound keep-alive id, default
+                                                     0x24 (1.20.2). -1 answers none
 
                                 The proxy must have online-mode = false: these cannot
                                 authenticate with Mojang.""");
@@ -578,7 +637,7 @@ public final class FakePlayers {
                 return null;
             }
             return new Options(host, port, count, stagger, prefix, trace, switchEvery,
-                    List.copyOf(destinations));
+                    List.copyOf(destinations), keepAliveId);
         }
     }
 }

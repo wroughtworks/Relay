@@ -155,6 +155,24 @@ been wrong. See `BackendKickHandler` for how a wrong id degrades: the frame is p
 rather than decoded, rejected unless its body could be a text component, and otherwise
 relayed untouched as before.
 
+Two more, from driving a fake client against a live Paper 1.20.2 server with packet
+logging on. Relay decodes neither, but anything speaking the protocol by hand needs both:
+
+- **Clientbound keep-alive is `0x24`** (`OUT: [play:36] ClientboundKeepAlivePacket`).
+- **Clientbound Synchronize Player Position is `0x3E`** (`OUT: [play:62]
+  PacketPlayOutPosition`), answered with serverbound `0x00`, Confirm Teleportation.
+
+The second is the one worth knowing about: **a server does not begin its keep-alive cycle
+until the join teleport is confirmed.** A client that never confirms is held unspawned,
+receives no keep-alives at all, and is eventually dropped — which looks exactly like a
+keep-alive problem and is not one.
+
+And a warning about identifying packets by size. A keep-alive carries a bare long, so an
+eight-byte body seems diagnostic; it is not. Entity metadata (`0x54`) and relative entity
+movement (`0x2c`) are frequently eight bytes too, and answering one of those as a
+keep-alive is worse than ignoring it — a server treats a response it never asked for as a
+timeout and kicks immediately.
+
 One more id worth recording even though Relay does not decode it: Paper's log shows
 `IN: [play:20] ServerboundKeepAlivePacket`, so **Keep Alive is `0x14`** at 1.20.2, not
 `0x12` as several community tables have it. That matters as a check on the ones above:

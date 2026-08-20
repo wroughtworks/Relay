@@ -161,6 +161,9 @@ is what exercises the switch path under load; `--offline` flips `online-mode`, r
 test and puts it back in a `finally`, so an interrupt cannot leave a proxy accepting
 anyone who claims a name.
 
+They hold their connections properly: they confirm the join teleport and answer real
+keep-alives, which is what a server needs before it considers a player spawned.
+
 They are genuine connections — a proxy cannot tell them from clients — but they measure
 **routing, not load**: a fake player never moves or loads a chunk, so a backend holding a
 hundred of them is barely working. The proxy must be in offline mode, since nothing here
