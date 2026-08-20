@@ -132,6 +132,17 @@ public final class FakePlayers {
             System.out.println("Nobody got in. The reason above is the one that matters.");
             return;
         }
+        if (options.holdSeconds > 0) {
+            System.out.printf("Holding them online for %ds.%n", options.holdSeconds);
+            Thread.sleep(options.holdSeconds * 1000);
+            // Leaving under our own power, rather than waiting to be killed. A signal on
+            // Windows is TerminateProcess, which skips shutdown hooks entirely -- so the
+            // clean disconnect below is the only version that ever actually runs.
+            System.out.println("Disconnecting.");
+            players.forEach(FakePlayer::close);
+            return;
+        }
+
         System.out.println("Holding them online. Check the dashboard or /glist, then Ctrl+C.");
 
         // Nothing else to do: the player threads keep the sockets alive, and the point of
@@ -141,6 +152,9 @@ public final class FakePlayers {
 
     /** One connection, driven to play state and then held there. */
     private static final class FakePlayer {
+
+        /** How long a leaving player waits for the proxy's side to finish and close. */
+        private static final int DRAIN_TIMEOUT_MILLIS = 500;
 
         private final Options options;
         private final String username;
@@ -433,15 +447,44 @@ public final class FakePlayers {
             }
         }
 
+        /**
+         * Leaves the way a client should: shut down the sending half, then read to the end.
+         *
+         * <p>A plain {@code close()} on a socket that still has unread data waiting makes
+         * TCP answer with a reset, and one of these always does &mdash; the proxy is
+         * streaming world updates until the moment it learns the player is gone. That
+         * reset surfaces on the proxy as {@code SocketException: Connection reset} logged
+         * at ERROR, twenty at a time, which is how a run of this tool ends up burying the
+         * errors somebody actually needs to see.
+         *
+         * <p>The same mistake in Relay's own detach path is what made backends log
+         * {@code Connection reset by peer} on every {@code /server}. A tool that provokes
+         * the bug it exists to detect is worse than no tool.
+         */
         void close() {
             closed = true;
             Socket current = socket;
-            if (current != null) {
-                try {
-                    current.close();
-                } catch (IOException ignored) {
-                    // Going away regardless.
+            if (current == null) {
+                return;
+            }
+            try {
+                current.shutdownOutput();
+                // Drain what is still in flight so nothing is left unread. Bounded,
+                // because a peer that never closes must not hold up the exit.
+                current.setSoTimeout(DRAIN_TIMEOUT_MILLIS);
+                byte[] discard = new byte[8192];
+                long deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MILLIS;
+                while (System.currentTimeMillis() < deadline
+                        && current.getInputStream().read(discard) >= 0) {
+                    // Reading it is the point; the content no longer matters.
                 }
+            } catch (IOException | RuntimeException ignored) {
+                // Going away regardless, and every failure here means already gone.
+            }
+            try {
+                current.close();
+            } catch (IOException ignored) {
+                // Going away regardless.
             }
         }
     }
@@ -580,7 +623,7 @@ public final class FakePlayers {
 
     private record Options(String host, int port, int count, long staggerMillis, String prefix,
                            boolean trace, long switchEvery, List<String> destinations,
-                           int keepAliveId) {
+                           int keepAliveId, long holdSeconds) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -597,6 +640,7 @@ public final class FakePlayers {
             // treats a keep-alive response it did not ask for as a timeout, so a wrong
             // guess is fatal within a second rather than merely useless.
             int keepAliveId = 0x24;
+            long holdSeconds = 0;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -609,6 +653,7 @@ public final class FakePlayers {
                     case "--switch" -> switchEvery = Long.parseLong(args[++i]);
                     case "--to" -> destinations.add(args[++i]);
                     case "--keepalive" -> keepAliveId = Integer.decode(args[++i]);
+                    case "--for" -> holdSeconds = Long.parseLong(args[++i]);
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -625,6 +670,8 @@ public final class FakePlayers {
                                                      repeatable
                                   --keepalive <id>   clientbound keep-alive id, default
                                                      0x24 (1.20.2). -1 answers none
+                                  --for <seconds>    leave cleanly after this long,
+                                                     instead of holding until killed
 
                                 The proxy must have online-mode = false: these cannot
                                 authenticate with Mojang.""");
@@ -637,7 +684,7 @@ public final class FakePlayers {
                 return null;
             }
             return new Options(host, port, count, stagger, prefix, trace, switchEvery,
-                    List.copyOf(destinations), keepAliveId);
+                    List.copyOf(destinations), keepAliveId, holdSeconds);
         }
     }
 }

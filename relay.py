@@ -1855,6 +1855,11 @@ def run_fake(args) -> int:
     command = ["java", "-cp", str(jar), "dev.relay.tools.FakePlayers",
                "--host", args.host, "--port", str(args.port),
                "--count", str(args.count), "--stagger", str(args.stagger)]
+    if args.hold:
+        # Handed to the tool rather than enforced by killing it: a killed process on
+        # Windows never runs its shutdown hook, so its sockets die by reset and the
+        # proxy logs twenty errors that are the test's fault, not Relay's.
+        command += ["--for", str(args.hold)]
     if args.switch:
         command += ["--switch", str(args.switch)]
         # Everything configured, so switching exercises the real routing rather
@@ -1869,8 +1874,29 @@ def run_fake(args) -> int:
         time.sleep(args.count * args.stagger / 1000 + 6)
         show_distribution()
         print()
-        print("Holding them online. Ctrl+C to disconnect and stop.")
-        process.wait()
+        if args.hold:
+            # A bounded run so the caller gets its config back. Without this the
+            # only way to stop is a signal, and a signal on Windows skips the
+            # `finally` that restores online-mode -- leaving a proxy that accepts
+            # anyone who claims a name, which is the one outcome worth designing
+            # against.
+            print(f"Holding them online for {args.hold}s.")
+            # Read again near the end, not after. The first reading is taken before
+            # switching has moved anyone, so it describes the joins rather than the
+            # balancing -- and a reading taken once they have left describes nothing,
+            # which is what the first version of this printed.
+            time.sleep(max(args.hold - 5, 0))
+            print()
+            show_distribution()
+            try:
+                # The tool disconnects under its own power and exits; waiting for that
+                # rather than killing it is the whole point of passing --for down.
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            print("Holding them online. Ctrl+C to disconnect and stop.")
+            process.wait()
     except KeyboardInterrupt:
         pass
     finally:
@@ -2154,6 +2180,8 @@ other:
                       help="flip online-mode off for the test, then put it back")
     fake.add_argument("--switch", type=int, default=0, metavar="MS",
                       help="keep moving between servers, roughly this often")
+    fake.add_argument("--for", dest="hold", type=int, default=0, metavar="SECONDS",
+                      help="disconnect and stop after this long, instead of waiting for Ctrl+C")
     fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
