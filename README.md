@@ -52,7 +52,9 @@ commands that reach the proxy by plugin message. See
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
 - **Client API**: a plugin-message protocol for client-side mods —
   see [docs/client-api.md](docs/client-api.md)
-- **Operations**: backpressure both directions, bounded buffers, graceful shutdown
+- **Operations**: backpressure both directions, bounded buffers, graceful shutdown, and
+  a half-close when detaching a backend, so switching a player does not make its old
+  server log a connection reset
 - **Dashboard**: a live page plus read-only REST and a WebSocket, off by default —
   see [Dashboard API](#dashboard-api)
 
