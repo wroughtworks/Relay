@@ -14,9 +14,11 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -47,42 +49,59 @@ import java.util.zip.Inflater;
  */
 public final class FakePlayers {
 
-    private static final int PROTOCOL = ProtocolVersion.MINECRAFT_1_20_2.id();
-
-    // --- serverbound ---
+    // --- serverbound, unchanged across every version this tool speaks ---
     private static final int SB_HANDSHAKE = 0x00;
     private static final int SB_LOGIN_START = 0x00;
     private static final int SB_LOGIN_ACK = 0x03;
-    private static final int SB_CONFIG_CLIENT_INFO = 0x00;
-    private static final int SB_CONFIG_FINISH_ACK = 0x02;
-    /** Agreeing to leave play state, which is how a switch begins. */
-    private static final int SB_PLAY_CONFIG_ACK = 0x0B;
-    /** Confirmed against a live Paper 1.20.2 log: {@code IN: [play:20]}. */
-    private static final int SB_PLAY_KEEP_ALIVE = 0x14;
-    /** Unsigned chat command, which is how a fake player asks to be moved. */
-    private static final int SB_PLAY_CHAT_COMMAND = 0x04;
-    /** Confirming the teleport a server performs on join. */
-    private static final int SB_PLAY_ACCEPT_TELEPORT = 0x00;
 
-    // --- clientbound ---
+    // --- clientbound login, likewise fixed ---
     private static final int CB_LOGIN_DISCONNECT = 0x00;
     private static final int CB_ENCRYPTION_REQUEST = 0x01;
     private static final int CB_LOGIN_SUCCESS = 0x02;
     private static final int CB_SET_COMPRESSION = 0x03;
-    private static final int CB_CONFIG_DISCONNECT = 0x01;
-    private static final int CB_CONFIG_FINISH = 0x02;
-    /** The proxy asking the client back into configuration, to move it elsewhere. */
-    private static final int CB_PLAY_START_CONFIGURATION = 0x65;
+
     /**
-     * The join teleport, confirmed against a live Paper 1.20.2 log
-     * ({@code OUT: [play:62] PacketPlayOutPosition}).
+     * The configuration- and play-state packet ids for one protocol version.
      *
-     * <p>Answering it is what completes a join. A server that never receives the
-     * confirmation leaves the player unspawned, and an unspawned player is never sent a
-     * keep-alive -- which is why a silent fake client sat for ninety seconds without one
-     * and then died anyway.
+     * <p>Every id here shifts when Mojang inserts a packet ahead of it, and a wrong one is
+     * not a degraded test but a dead one: a server treats an unsolicited keep-alive
+     * response as a timeout, and a client that never confirms its join teleport is never
+     * sent a keep-alive at all. Both failures look identical from the outside &mdash; a
+     * player kicked seconds after joining &mdash; which is why they cost a day to find.
+     *
+     * <p>Kept as this tool's own table rather than read out of {@link
+     * dev.relay.protocol.StateRegistry}. A fake client that derives its ids from the proxy
+     * under test agrees with the proxy by construction: were Relay's table wrong for a
+     * version, the tool would speak the same wrong ids and every player would sail
+     * through. These are the numbers a real client sends, and disagreeing with Relay is
+     * the entire signal.
      */
-    private static final int CB_PLAY_POSITION = 0x3E;
+    record Ids(String version,
+                       int configClientInfo, int configFinishAck,
+                       int configDisconnect, int configFinish,
+                       int playConfigAck, int playKeepAlive, int playChatCommand,
+                       int playAcceptTeleport,
+                       int startConfiguration, int position, int keepAlive) {
+    }
+
+    /**
+     * Only versions whose ids have been read off a live server of that version.
+     *
+     * <p>Nothing is inferred into this table. The ids do usually shift by a predictable
+     * amount, and following the pattern would fill in eight more versions in a minute --
+     * but a plausible guess that is wrong produces a tool which reports a proxy bug that
+     * does not exist, and there is no worse outcome for a test tool than that. An absent
+     * version says "unverified" out loud; a guessed one says nothing at all.
+     */
+    static final Map<Integer, Ids> IDS = Map.of(
+            // Every value below read from a live Paper 1.20.2 debug packet log, e.g.
+            // OUT: [play:62] PacketPlayOutPosition, IN: [play:20] keep-alive.
+            ProtocolVersion.MINECRAFT_1_20_2.id(), new Ids("1.20.2",
+                    0x00, 0x02,
+                    0x01, 0x02,
+                    0x0B, 0x14, 0x04,
+                    0x00,
+                    0x65, 0x3E, 0x24));
 
     /** Position, three doubles and two floats, then flags, then the teleport id. */
     private static final int POSITION_PREFIX_BYTES = 8 * 3 + 4 * 2 + 1;
@@ -102,6 +121,7 @@ public final class FakePlayers {
         System.out.printf("Connecting %d fake players to %s:%d as %s0..%s%d%n",
                 options.count, options.host, options.port,
                 options.prefix, options.prefix, options.count - 1);
+        System.out.printf("Speaking %s (protocol %d).%n", options.ids.version(), options.protocol);
         System.out.println("They speak the real protocol and then sit still: this measures "
                 + "routing, not load.");
 
@@ -110,9 +130,15 @@ public final class FakePlayers {
         AtomicInteger failed = new AtomicInteger();
         CountDownLatch settled = new CountDownLatch(options.count);
 
+        // A backstop for Ctrl+C, not the normal path. When --for runs its course the
+        // players have already left by the time the JVM exits, and close() is idempotent
+        // -- but announcing it twice reads as a bug in the tool.
+        AtomicBoolean disconnected = new AtomicBoolean();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("\nDisconnecting.");
-            players.forEach(FakePlayer::close);
+            if (disconnected.compareAndSet(false, true)) {
+                System.out.println("\nDisconnecting.");
+                players.forEach(FakePlayer::close);
+            }
         }));
 
         for (int i = 0; i < options.count; i++) {
@@ -138,6 +164,7 @@ public final class FakePlayers {
             // Leaving under our own power, rather than waiting to be killed. A signal on
             // Windows is TerminateProcess, which skips shutdown hooks entirely -- so the
             // clean disconnect below is the only version that ever actually runs.
+            disconnected.set(true);
             System.out.println("Disconnecting.");
             players.forEach(FakePlayer::close);
             return;
@@ -233,7 +260,7 @@ public final class FakePlayers {
         private void handshake(Stream stream) throws IOException {
             ByteBuf buf = Unpooled.buffer();
             buf.writeByte(SB_HANDSHAKE);
-            ProtocolUtils.writeVarInt(buf, PROTOCOL);
+            ProtocolUtils.writeVarInt(buf, options.protocol);
             ProtocolUtils.writeString(buf, options.host);
             buf.writeShort(options.port);
             ProtocolUtils.writeVarInt(buf, 2);        // next state: login
@@ -279,7 +306,7 @@ public final class FakePlayers {
             // version of this tool skipped it and every fake player was kicked within a
             // second of joining, reported as a timeout.
             ByteBuf info = Unpooled.buffer();
-            info.writeByte(SB_CONFIG_CLIENT_INFO);
+            info.writeByte(options.ids.configClientInfo());
             ProtocolUtils.writeString(info, "en_gb");
             info.writeByte(8);                        // view distance
             ProtocolUtils.writeVarInt(info, 0);       // chat mode: enabled
@@ -293,11 +320,11 @@ public final class FakePlayers {
             while (true) {
                 ByteBuf frame = stream.read();
                 int id = ProtocolUtils.readVarInt(frame);
-                if (id == CB_CONFIG_DISCONNECT) {
+                if (id == options.ids.configDisconnect()) {
                     throw new Failure("refused while configuring: " + readReason(frame));
                 }
-                if (id == CB_CONFIG_FINISH) {
-                    stream.write(Unpooled.buffer().writeByte(SB_CONFIG_FINISH_ACK));
+                if (id == options.ids.configFinish()) {
+                    stream.write(Unpooled.buffer().writeByte(options.ids.configFinishAck()));
                     return;
                 }
                 // Registries, tags, feature flags: accepted without being understood,
@@ -339,8 +366,8 @@ public final class FakePlayers {
                 // the proxy, on no backend at all, and counted in neither place. That is
                 // exactly how a first run reported twelve players online with every
                 // backend showing zero.
-                if (id == CB_PLAY_START_CONFIGURATION) {
-                    stream.write(Unpooled.buffer().writeByte(SB_PLAY_CONFIG_ACK));
+                if (id == options.ids.startConfiguration()) {
+                    stream.write(Unpooled.buffer().writeByte(options.ids.playConfigAck()));
                     configure(stream);
                     switches++;
                     if (traced) {
@@ -353,11 +380,11 @@ public final class FakePlayers {
                 // The join teleport. Confirming it is not optional: until it is answered
                 // the server holds the player unspawned, sends no keep-alives, and
                 // eventually gives up on them.
-                if (id == CB_PLAY_POSITION && body > POSITION_PREFIX_BYTES) {
+                if (id == options.ids.position() && body > POSITION_PREFIX_BYTES) {
                     frame.skipBytes(POSITION_PREFIX_BYTES);
                     int teleportId = ProtocolUtils.readVarInt(frame);
                     ByteBuf confirm = Unpooled.buffer();
-                    confirm.writeByte(SB_PLAY_ACCEPT_TELEPORT);
+                    confirm.writeByte(options.ids.playAcceptTeleport());
                     ProtocolUtils.writeVarInt(confirm, teleportId);
                     synchronized (this) {
                         stream.write(confirm);
@@ -381,10 +408,10 @@ public final class FakePlayers {
                         keepAliveId = id;
                         note("keep-alive is clientbound 0x" + Integer.toHexString(id)
                                 + "; answering with serverbound 0x"
-                                + Integer.toHexString(SB_PLAY_KEEP_ALIVE));
+                                + Integer.toHexString(options.ids.playKeepAlive()));
                     }
                     ByteBuf pong = Unpooled.buffer();
-                    pong.writeByte(SB_PLAY_KEEP_ALIVE);
+                    pong.writeByte(options.ids.playKeepAlive());
                     pong.writeLong(frame.readLong());
                     stream.write(pong);
                 }
@@ -416,7 +443,7 @@ public final class FakePlayers {
                         String destination = options.destinations.get(
                                 random.nextInt(options.destinations.size()));
                         ByteBuf command = Unpooled.buffer();
-                        command.writeByte(SB_PLAY_CHAT_COMMAND);
+                        command.writeByte(options.ids.playChatCommand());
                         ProtocolUtils.writeString(command, "server " + destination);
                         command.writeLong(System.currentTimeMillis());
                         command.writeLong(0L);            // salt
@@ -623,7 +650,7 @@ public final class FakePlayers {
 
     private record Options(String host, int port, int count, long staggerMillis, String prefix,
                            boolean trace, long switchEvery, List<String> destinations,
-                           int keepAliveId, long holdSeconds) {
+                           int keepAliveId, long holdSeconds, int protocol, Ids ids) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -634,13 +661,12 @@ public final class FakePlayers {
             boolean trace = false;
             long switchEvery = 0;
             List<String> destinations = new ArrayList<>();
-            // Confirmed against a live Paper 1.20.2 log: OUT: [play:36]
-            // ClientboundKeepAlivePacket. Named rather than guessed, because guessing by
-            // packet size answered entity movement and entity metadata -- and a server
-            // treats a keep-alive response it did not ask for as a timeout, so a wrong
-            // guess is fatal within a second rather than merely useless.
-            int keepAliveId = 0x24;
             long holdSeconds = 0;
+            int protocol = ProtocolVersion.MINECRAFT_1_20_2.id();
+            // -1 means "whatever the table says for the chosen version"; an explicit
+            // --keepalive overrides it, which is how a new version gets tried before its
+            // row exists.
+            int keepAliveId = -1;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -654,6 +680,7 @@ public final class FakePlayers {
                     case "--to" -> destinations.add(args[++i]);
                     case "--keepalive" -> keepAliveId = Integer.decode(args[++i]);
                     case "--for" -> holdSeconds = Long.parseLong(args[++i]);
+                    case "--protocol" -> protocol = Integer.parseInt(args[++i]);
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -668,8 +695,10 @@ public final class FakePlayers {
                                   --switch <ms>      keep moving, roughly this often
                                   --to <name>        somewhere --switch may send them;
                                                      repeatable
-                                  --keepalive <id>   clientbound keep-alive id, default
-                                                     0x24 (1.20.2). -1 answers none
+                                  --protocol <n>     protocol version to speak, default
+                                                     764 (1.20.2)
+                                  --keepalive <id>   clientbound keep-alive id, overriding
+                                                     the table. -1 answers none
                                   --for <seconds>    leave cleanly after this long,
                                                      instead of holding until killed
 
@@ -683,8 +712,32 @@ public final class FakePlayers {
                 System.out.println("--switch needs at least one --to <server|group>");
                 return null;
             }
+
+            Ids ids = IDS.get(protocol);
+            if (ids == null) {
+                ProtocolVersion version = ProtocolVersion.byId(protocol);
+                System.out.printf("No verified packet ids for protocol %d%s.%n", protocol,
+                        version == null ? "" : " (" + version.displayName() + ")");
+                System.out.println("""
+                          Relay may well speak this version; this tool has not been taught
+                          to. The ids it needs -- keep-alive, start configuration, the join
+                          teleport and its confirmation -- move whenever Mojang inserts a
+                          packet, and guessing one produces a fake player that is kicked
+                          within a second for reasons that look like a proxy bug.
+
+                          To add a version: run a backend of it under
+                          `py relay.py paper-debug <name>`, join once, and read the ids out
+                          of its packet log. Then add a row to IDS in this file.""");
+                System.out.println("  verified so far: " + IDS.values().stream()
+                        .map(Ids::version).sorted().toList());
+                return null;
+            }
+            if (keepAliveId == -1) {
+                keepAliveId = ids.keepAlive();
+            }
+
             return new Options(host, port, count, stagger, prefix, trace, switchEvery,
-                    List.copyOf(destinations), keepAliveId, holdSeconds);
+                    List.copyOf(destinations), keepAliveId, holdSeconds, protocol, ids);
         }
     }
 }

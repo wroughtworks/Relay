@@ -1860,6 +1860,8 @@ def run_fake(args) -> int:
         # Windows never runs its shutdown hook, so its sockets die by reset and the
         # proxy logs twenty errors that are the test's fault, not Relay's.
         command += ["--for", str(args.hold)]
+    if args.protocol:
+        command += ["--protocol", str(args.protocol)]
     if args.switch:
         command += ["--switch", str(args.switch)]
         # Everything configured, so switching exercises the real routing rather
@@ -1881,13 +1883,17 @@ def run_fake(args) -> int:
             # anyone who claims a name, which is the one outcome worth designing
             # against.
             print(f"Holding them online for {args.hold}s.")
-            # Read again near the end, not after. The first reading is taken before
-            # switching has moved anyone, so it describes the joins rather than the
-            # balancing -- and a reading taken once they have left describes nothing,
-            # which is what the first version of this printed.
-            time.sleep(max(args.hold - 5, 0))
-            print()
-            show_distribution()
+            # Read again while they are still on, not after. The first reading is taken
+            # before switching has moved anyone, so it describes the joins rather than
+            # the balancing -- and a reading taken once they have left describes nothing,
+            # which is what the first two versions of this printed. A fraction rather
+            # than a fixed offset, because the two processes start their timers moments
+            # apart and a five-second margin lost that race; the liveness check below is
+            # what makes it correct rather than merely likely.
+            time.sleep(max(args.hold * 0.6, 1))
+            if process.poll() is None:
+                print()
+                show_distribution()
             try:
                 # The tool disconnects under its own power and exits; waiting for that
                 # rather than killing it is the whole point of passing --for down.
@@ -2182,6 +2188,8 @@ other:
                       help="keep moving between servers, roughly this often")
     fake.add_argument("--for", dest="hold", type=int, default=0, metavar="SECONDS",
                       help="disconnect and stop after this long, instead of waiting for Ctrl+C")
+    fake.add_argument("--protocol", type=int, default=0, metavar="N",
+                      help="protocol version to speak (default 764, 1.20.2)")
     fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")

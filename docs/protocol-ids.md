@@ -192,6 +192,56 @@ the shift, which is why they were right.
 > `system_chat` values keep the +2 offset from `start_configuration` that holds at 1.20.2;
 > verify them before trusting them.
 
+## The second table: what the fake client speaks
+
+`FakePlayers` carries its **own** id table (`FakePlayers.IDS`), separate from
+`StateRegistry`. That is deliberate. A fake client that read its ids out of the proxy it
+is testing would agree with that proxy by construction — if Relay's table were wrong for
+some version, the tool would speak the same wrong ids and every fake player would connect
+happily, proving nothing. Two independently maintained tables disagree loudly when either
+is wrong.
+
+`FakeClientProtocolTest` compares them on every version the tool claims. A failure there
+means one of the two is wrong; check the protocol reference rather than editing one to
+match the other.
+
+The tool needs four ids Relay has no opinion about, because Relay forwards them as opaque
+frames and never decodes them:
+
+| Packet | 1.20.2 | Why the tool needs it |
+|---|---|---|
+| clientbound keep-alive | `0x24` ✓ | Answering it is what keeps a fake player alive |
+| serverbound keep-alive | `0x14` ✓ | The reply |
+| clientbound Synchronize Player Position | `0x3E` ✓ | The join teleport |
+| serverbound Confirm Teleportation | `0x00` ✓ | Without it the server never starts sending keep-alives |
+| serverbound Client Information (config) | `0x00` ✓ | Paper drops a player it knows nothing about |
+
+**Only 1.20.2 is in the table**, and an unknown version is refused with an explanation
+rather than guessed at:
+
+```
+$ py relay.py fake --protocol 769
+No verified packet ids for protocol 769 (1.21.4).
+```
+
+The ids above almost certainly shift by the same amounts as the rest of this page, and
+filling in eight more versions from that pattern would take a minute. It is not done,
+because a plausible-but-wrong id produces a tool that reports a proxy bug which does not
+exist — the one failure mode a test tool must not have. An absent version says
+"unverified" out loud; a guessed one says nothing at all.
+
+### Adding a version to the fake client
+
+1. Get a backend of that version running.
+2. `py relay.py paper-debug <name>` — writes Paper's `log4j2` config so
+   `net.minecraft.network` logs every packet id it handles.
+3. Join once with a real client of that version and switch servers with `/server`.
+4. Read the ids out of the log: `OUT: [play:N] ClientboundKeepAlivePacket` and friends.
+   The bracketed number is decimal.
+5. Add a row to `FakePlayers.IDS`, and tick the rows above.
+6. `py relay.py fake --protocol <n>` — it now runs, and `FakeClientProtocolTest` checks
+   the new row against `StateRegistry` for free.
+
 ## Adding a Minecraft version
 
 1. Add the constant to `ProtocolVersion` with its protocol number.
