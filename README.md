@@ -141,7 +141,7 @@ rcon.password=something
 Balancing is the one feature a single connection cannot judge, so there is a crowd:
 
 ```bash
-py relay.py fake 40
+py relay.py fake 40 --offline --switch 5000
 ```
 
 That connects forty real protocol clients through the proxy, then prints where they
@@ -156,11 +156,35 @@ Where they landed
   total         40
 ```
 
+`--switch` keeps them moving between servers rather than joining and sitting still, which
+is what exercises the switch path under load; `--offline` flips `online-mode`, runs the
+test and puts it back in a `finally`, so an interrupt cannot leave a proxy accepting
+anyone who claims a name.
+
 They are genuine connections — a proxy cannot tell them from clients — but they measure
 **routing, not load**: a fake player never moves or loads a chunk, so a backend holding a
 hundred of them is barely working. The proxy must be in offline mode, since nothing here
 can authenticate with Mojang; `fake` checks that first and says so rather than letting
 forty logins fail identically.
+
+Before blaming anything, check the stack that is actually running:
+
+```bash
+py relay.py doctor --live
+```
+
+`doctor` alone reads config files. `--live` reads reality: the listener answers a real
+ping, the control channel is bound, the dashboard responds, every backend is healthy, and
+each backend's installed plugin matches the current build. That last one matters most —
+the plugin reports TPS, registers the proxy's commands and carries the backend API, so an
+old copy silently disagrees with the proxy about what exists.
+
+One command for the whole rebuild cycle, which waits until the proxy actually answers
+rather than until it was merely started:
+
+```bash
+py relay.py restart
+```
 
 Other commands: `status`, `ping` (a real server-list ping, proving the proxy answers
 rather than merely listens), `build`, `stop`, `logs -f`, `test`, and `paper-debug <name>`
