@@ -1617,7 +1617,14 @@ def cmd_restart(args) -> int:
             return 1
 
     heading("Starting")
-    code = cmd_up(args)
+    # cmd_up's own namespace, from cmd_up's own parser. Restart does not know which
+    # options up reads, and should not have to: a hand-built namespace goes stale the
+    # moment up grows an option, and fails only when that option is next touched.
+    # Never the console by default. restart exists to rebuild and prove the stack is
+    # answering, and a blocking prompt in the middle of that hides the answer.
+    up = build_parser().parse_args(["up"] if getattr(args, "shell", False) else ["up", "--no-shell"])
+    up.timeout = args.timeout
+    code = cmd_up(up)
     if code != 0:
         return code
 
@@ -1780,23 +1787,80 @@ def cmd_fake(args) -> int:
 
     # Checked before anything connects: a proxy in online mode refuses every fake
     # player identically, and forty copies of that is not a useful way to find out.
-    if CONFIG.exists():
-        try:
-            if load_toml(CONFIG).get("online-mode", True):
-                print(Style.red("online-mode = true in relay.toml."))
-                print("  Fake players cannot authenticate with Mojang. Set it to false,")
-                print("  restart the proxy, load test, then set it back.")
-                return 1
-        except Exception:
-            pass
+    online = True
+    try:
+        online = bool(load_toml(CONFIG).get("online-mode", True)) if CONFIG.exists() else False
+    except Exception:
+        online = False
+
+    if online and not args.offline:
+        print(Style.red("online-mode = true in relay.toml."))
+        print("  Fake players cannot authenticate with Mojang.")
+        print(Style.yellow("  py relay.py fake --offline") + "  flips it, tests, and puts it back")
+        return 1
+
+    if online and args.offline:
+        # Restored in a finally below, so an interrupt cannot leave a proxy
+        # accepting anyone who claims a name. Doing this by hand is exactly how
+        # a config gets left in offline mode and forgotten.
+        return with_offline_mode(lambda: run_fake(args))
+
+    return run_fake(args)
+
+
+def restart_args(**overrides):
+    """
+    A namespace for cmd_restart built from the real parser.
+
+    Hand-rolling one means listing every option cmd_up happens to read, and
+    missing one fails at the moment it is used rather than when it is written --
+    which is how the first version of this crashed halfway through a test with
+    the config still flipped.
+    """
+    args = build_parser().parse_args(["restart", "--no-build"])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+
+def with_offline_mode(body) -> int:
+    """Runs body with online-mode off, and puts the config back whatever happens."""
+    original = CONFIG.read_text(encoding="utf-8-sig")
+    flipped = original.replace("online-mode = true", "online-mode = false", 1)
+    if flipped == original:
+        print(Style.red("Could not find `online-mode = true` to flip."))
+        return 1
+
+    print(Style.yellow("Switching to offline mode for this test."))
+    CONFIG.write_text(flipped, encoding="utf-8")
+    try:
+        if cmd_restart(restart_args()) != 0:
+            return 1
+        return body()
+    finally:
+        CONFIG.write_text(original, encoding="utf-8")
+        print()
+        print(Style.yellow("Restoring online mode and restarting."))
+        cmd_restart(restart_args())
+
+
+def run_fake(args) -> int:
 
     if not relay_processes():
         print(Style.red("Relay is not running. Start it with `py relay.py up`."))
         return 1
 
+    jar = jar_path()
     command = ["java", "-cp", str(jar), "dev.relay.tools.FakePlayers",
                "--host", args.host, "--port", str(args.port),
                "--count", str(args.count), "--stagger", str(args.stagger)]
+    if args.switch:
+        command += ["--switch", str(args.switch)]
+        # Everything configured, so switching exercises the real routing rather
+        # than a list someone had to remember to keep in step with relay.toml.
+        for name in fake_destinations():
+            command += ["--to", name]
 
     print(Style.dim("$ " + " ".join(command)))
     process = subprocess.Popen(command, cwd=str(PROJECT))
@@ -1817,6 +1881,18 @@ def cmd_fake(args) -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
     return 0
+
+
+def fake_destinations() -> list[str]:
+    """Groups if there are any, otherwise backends: what a player could type."""
+    try:
+        config = load_toml(CONFIG)
+    except Exception:
+        return []
+    groups = list((config.get("groups", {}) or {}).keys())
+    servers = list((config.get("servers", {}) or {}).keys())
+    grouped = {member for members in (config.get("groups", {}) or {}).values() for member in members}
+    return groups + [name for name in servers if name not in grouped]
 
 
 def show_distribution() -> None:
@@ -2063,7 +2139,8 @@ other:
 
     restart = sub.add_parser("restart", help="stop, rebuild, start, and wait until it answers")
     restart.add_argument("--no-build", action="store_true", help="skip the rebuild")
-    restart.add_argument("--no-shell", action="store_true", help="do not open the control console")
+    restart.add_argument("--shell", action="store_true",
+                         help="open the control console once it is up")
     restart.add_argument("--timeout", type=int, default=60, help="seconds to wait for backends")
     restart.set_defaults(func=cmd_restart)
 
@@ -2073,6 +2150,10 @@ other:
     fake.add_argument("--port", type=int, default=25565)
     fake.add_argument("--stagger", type=int, default=150,
                       help="milliseconds between connections (default 150)")
+    fake.add_argument("--offline", action="store_true",
+                      help="flip online-mode off for the test, then put it back")
+    fake.add_argument("--switch", type=int, default=0, metavar="MS",
+                      help="keep moving between servers, roughly this often")
     fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")

@@ -1,13 +1,16 @@
 <configuration>
 
+  <!-- `class`, not `converterClass`: the latter is deprecated, and logback answers a
+       deprecation by dumping its entire startup status to stdout. That noise buried the
+       output of every tool run from this jar. -->
   <!-- Companion output is tinted per process, so a supervised program's lines are
        distinguishable from Relay's own at a glance. The colour is derived from the
        companion's name, so it is stable across restarts. Console only: the file
        appender below uses neither converter and stays free of escape codes. -->
   <conversionRule conversionWord="companionColour"
-                  converterClass="dev.relay.companion.CompanionColour$Start"/>
+                  class="dev.relay.companion.CompanionColour$Start"/>
   <conversionRule conversionWord="companionReset"
-                  converterClass="dev.relay.companion.CompanionColour$End"/>
+                  class="dev.relay.companion.CompanionColour$End"/>
 
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>

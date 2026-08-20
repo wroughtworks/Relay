@@ -59,6 +59,8 @@ public final class FakePlayers {
     private static final int SB_PLAY_CONFIG_ACK = 0x0B;
     /** Confirmed against a live Paper 1.20.2 log: {@code IN: [play:20]}. */
     private static final int SB_PLAY_KEEP_ALIVE = 0x14;
+    /** Unsigned chat command, which is how a fake player asks to be moved. */
+    private static final int SB_PLAY_CHAT_COMMAND = 0x04;
 
     // --- clientbound ---
     private static final int CB_LOGIN_DISCONNECT = 0x00;
@@ -282,6 +284,9 @@ public final class FakePlayers {
          */
         private void play(Stream stream) throws IOException {
             long enteredPlay = System.currentTimeMillis();
+            if (options.switchEvery > 0) {
+                startSwitching(stream);
+            }
 
             while (!closed) {
                 ByteBuf frame = stream.read();
@@ -321,6 +326,53 @@ public final class FakePlayers {
                     stream.write(pong);
                 }
             }
+        }
+
+        /**
+         * Periodically asks to be moved, to keep the switch path under load.
+         *
+         * <p>Switching is where this proxy's hardest bug lived, and it only appeared when
+         * the old backend was still sending play packets as the client changed state. A
+         * crowd that joins and sits still never reproduces that; a crowd that keeps moving
+         * does, on every one of them at once.
+         *
+         * <p>Each player picks its own interval around the requested one. Forty clients
+         * switching in lockstep is a thundering herd, which is a different test and not
+         * the one being asked for.
+         */
+        private void startSwitching(Stream stream) {
+            Thread thread = new Thread(() -> {
+                java.util.Random random = new java.util.Random();
+                while (!closed) {
+                    try {
+                        long jitter = options.switchEvery / 2;
+                        Thread.sleep(options.switchEvery + random.nextInt((int) Math.max(1, jitter)));
+                        if (closed) {
+                            return;
+                        }
+                        String destination = options.destinations.get(
+                                random.nextInt(options.destinations.size()));
+                        ByteBuf command = Unpooled.buffer();
+                        command.writeByte(SB_PLAY_CHAT_COMMAND);
+                        ProtocolUtils.writeString(command, "server " + destination);
+                        command.writeLong(System.currentTimeMillis());
+                        command.writeLong(0L);            // salt
+                        ProtocolUtils.writeVarInt(command, 0);   // no argument signatures
+                        ProtocolUtils.writeVarInt(command, 0);   // no acknowledged messages
+                        command.writeBytes(new byte[3]);         // acknowledged bitset
+                        synchronized (this) {
+                            stream.write(command);
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    } catch (IOException gone) {
+                        return;
+                    }
+                }
+            }, "switch-" + username);
+            thread.setDaemon(true);
+            thread.start();
         }
 
         /** One line per distinct observation, whatever the size of the crowd. */
@@ -478,7 +530,7 @@ public final class FakePlayers {
     }
 
     private record Options(String host, int port, int count, long staggerMillis, String prefix,
-                           boolean trace) {
+                           boolean trace, long switchEvery, List<String> destinations) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -487,6 +539,8 @@ public final class FakePlayers {
             long stagger = 150;
             String prefix = "Fake";
             boolean trace = false;
+            long switchEvery = 0;
+            List<String> destinations = new ArrayList<>();
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -496,6 +550,8 @@ public final class FakePlayers {
                     case "--stagger" -> stagger = Long.parseLong(args[++i]);
                     case "--prefix" -> prefix = args[++i];
                     case "--trace" -> trace = true;
+                    case "--switch" -> switchEvery = Long.parseLong(args[++i]);
+                    case "--to" -> destinations.add(args[++i]);
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -507,6 +563,9 @@ public final class FakePlayers {
                                   --prefix <name>    default Fake
                                   --trace            print every play packet the first
                                                      player receives, with timings
+                                  --switch <ms>      keep moving, roughly this often
+                                  --to <name>        somewhere --switch may send them;
+                                                     repeatable
 
                                 The proxy must have online-mode = false: these cannot
                                 authenticate with Mojang.""");
@@ -514,7 +573,12 @@ public final class FakePlayers {
                     }
                 }
             }
-            return new Options(host, port, count, stagger, prefix, trace);
+            if (switchEvery > 0 && destinations.isEmpty()) {
+                System.out.println("--switch needs at least one --to <server|group>");
+                return null;
+            }
+            return new Options(host, port, count, stagger, prefix, trace, switchEvery,
+                    List.copyOf(destinations));
         }
     }
 }
