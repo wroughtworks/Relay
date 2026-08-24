@@ -1866,9 +1866,12 @@ def run_fake(args) -> int:
         command += ["--virtual-host", args.virtual_host]
     if args.switch:
         command += ["--switch", str(args.switch)]
-        # Everything configured, so switching exercises the real routing rather
-        # than a list someone had to remember to keep in step with relay.toml.
-        for name in fake_destinations():
+        # Everything configured by default, so switching exercises the real routing
+        # rather than a list someone had to remember to keep in step with relay.toml.
+        # An explicit --to narrows it, which is needed the moment backends differ in
+        # Minecraft version: a 1.21.8 client sent to a 1.20.2 server is refused, and
+        # that is the server being right rather than a result worth collecting.
+        for name in (args.to or fake_destinations()):
             command += ["--to", name]
 
     print(Style.dim("$ " + " ".join(command)))
@@ -2194,6 +2197,9 @@ other:
                       help="protocol version to speak (default 764, 1.20.2)")
     fake.add_argument("--virtual-host", metavar="HOST",
                       help="hostname to claim in the handshake, for testing forced hosts")
+    fake.add_argument("--to", action="append", metavar="NAME",
+                      help="restrict --switch to these backends; repeatable "
+                           "(default: everything in relay.toml)")
     fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
