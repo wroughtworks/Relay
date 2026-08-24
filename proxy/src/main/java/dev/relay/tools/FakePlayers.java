@@ -81,7 +81,30 @@ public final class FakePlayers {
                        int configDisconnect, int configFinish,
                        int playConfigAck, int playKeepAlive, int playChatCommand,
                        int playAcceptTeleport,
-                       int startConfiguration, int position, int keepAlive) {
+                       int startConfiguration, int position, int keepAlive,
+                       /**
+                        * Whether Client Information carries a trailing particle status.
+                        *
+                        * <p>The one thing in this record that is not an id. Ids can be read
+                        * out of Mojang's packet report; field layouts cannot, and this
+                        * field was added in 1.21.2 with nothing in the report to say so.
+                        *
+                        * <p>Getting it wrong is at least loud: the server answers
+                        * {@code DecoderException: Failed to decode packet
+                        * 'serverbound/minecraft:client_information'} and drops the player
+                        * during configuration, which is how this was found.
+                        */
+                       boolean clientInfoHasParticleStatus,
+                       /**
+                        * Known Packs, or {@code -1} at versions without it.
+                        *
+                        * <p>Added in 1.20.5 and easy to miss, because nothing about it
+                        * fails: the server sends its pack list and waits for the client's
+                        * before continuing, so a client that ignores it simply never
+                        * finishes configuring. Both sides sit there until something times
+                        * out, and the server's log says only "lost connection".
+                        */
+                       int knownPacksClientbound, int knownPacksServerbound) {
     }
 
     /**
@@ -107,33 +130,33 @@ public final class FakePlayers {
             Map.entry(ProtocolVersion.MINECRAFT_1_20_2.id(), new Ids("1.20.2",
                     0x00, 0x02, 0x01, 0x02,
                     0x0B, 0x14, 0x04, 0x00,
-                    0x65, 0x3E, 0x24)),
+                    0x65, 0x3E, 0x24, false, -1, -1)),
             // The rest from packets.json, one report per protocol version. The release
             // named is the build the ids were read from, not the only one they cover.
             Map.entry(ProtocolVersion.MINECRAFT_1_21.id(), new Ids("1.21.1",
                     0x00, 0x03, 0x02, 0x03,
                     0x0C, 0x18, 0x04, 0x00,
-                    0x69, 0x40, 0x26)),
+                    0x69, 0x40, 0x26, false, 0x0E, 0x07)),
             Map.entry(ProtocolVersion.MINECRAFT_1_21_2.id(), new Ids("1.21.3",
                     0x00, 0x03, 0x02, 0x03,
                     0x0E, 0x1A, 0x05, 0x00,
-                    0x70, 0x42, 0x27)),
+                    0x70, 0x42, 0x27, true, 0x0E, 0x07)),
             Map.entry(ProtocolVersion.MINECRAFT_1_21_4.id(), new Ids("1.21.4",
                     0x00, 0x03, 0x02, 0x03,
                     0x0E, 0x1A, 0x05, 0x00,
-                    0x70, 0x42, 0x27)),
+                    0x70, 0x42, 0x27, true, 0x0E, 0x07)),
             Map.entry(ProtocolVersion.MINECRAFT_1_21_5.id(), new Ids("1.21.5",
                     0x00, 0x03, 0x02, 0x03,
                     0x0E, 0x1A, 0x05, 0x00,
-                    0x6F, 0x41, 0x26)),
+                    0x6F, 0x41, 0x26, true, 0x0E, 0x07)),
             Map.entry(ProtocolVersion.MINECRAFT_1_21_6.id(), new Ids("1.21.6",
                     0x00, 0x03, 0x02, 0x03,
                     0x0F, 0x1B, 0x06, 0x00,
-                    0x6F, 0x41, 0x26)),
+                    0x6F, 0x41, 0x26, true, 0x0E, 0x07)),
             Map.entry(ProtocolVersion.MINECRAFT_1_21_7.id(), new Ids("1.21.8",
                     0x00, 0x03, 0x02, 0x03,
                     0x0F, 0x1B, 0x06, 0x00,
-                    0x6F, 0x41, 0x26)));
+                    0x6F, 0x41, 0x26, true, 0x0E, 0x07)));
 
     /** Position, three doubles and two floats, then flags, then the teleport id. */
     private static final int POSITION_PREFIX_BYTES = 8 * 3 + 4 * 2 + 1;
@@ -153,7 +176,8 @@ public final class FakePlayers {
         System.out.printf("Connecting %d fake players to %s:%d as %s0..%s%d%n",
                 options.count, options.host, options.port,
                 options.prefix, options.prefix, options.count - 1);
-        System.out.printf("Speaking %s (protocol %d).%n", options.ids.version(), options.protocol);
+        System.out.printf("Speaking %s (protocol %d)%s.%n", options.ids.version(), options.protocol,
+                options.virtualHostOrNull == null ? "" : ", claiming host " + options.virtualHostOrNull);
         System.out.println("They speak the real protocol and then sit still: this measures "
                 + "routing, not load.");
 
@@ -293,7 +317,10 @@ public final class FakePlayers {
             ByteBuf buf = Unpooled.buffer();
             buf.writeByte(SB_HANDSHAKE);
             ProtocolUtils.writeVarInt(buf, options.protocol);
-            ProtocolUtils.writeString(buf, options.host);
+            // The address the client believes it connected to, which is not always where
+            // the socket went. Relay routes on this (forced hosts), so a tool that always
+            // sends the dialled IP cannot exercise that path at all.
+            ProtocolUtils.writeString(buf, options.virtualHost());
             buf.writeShort(options.port);
             ProtocolUtils.writeVarInt(buf, 2);        // next state: login
             stream.write(buf);
@@ -347,6 +374,9 @@ public final class FakePlayers {
             ProtocolUtils.writeVarInt(info, 1);       // main hand: right
             info.writeBoolean(false);                 // text filtering
             info.writeBoolean(true);                  // visible in server listings
+            if (options.ids.clientInfoHasParticleStatus()) {
+                ProtocolUtils.writeVarInt(info, 0);   // particle status: all
+            }
             stream.write(info);
 
             while (true) {
@@ -354,6 +384,17 @@ public final class FakePlayers {
                 int id = ProtocolUtils.readVarInt(frame);
                 if (id == options.ids.configDisconnect()) {
                     throw new Failure("refused while configuring: " + readReason(frame));
+                }
+                if (id == options.ids.knownPacksClientbound()) {
+                    // The server offers its data packs and waits for the client's answer
+                    // before sending registry data at all. An empty list is a legitimate
+                    // reply -- it means "I know none of these, send everything" -- and it
+                    // keeps this tool out of the business of parsing pack lists.
+                    ByteBuf known = Unpooled.buffer();
+                    known.writeByte(options.ids.knownPacksServerbound());
+                    ProtocolUtils.writeVarInt(known, 0);
+                    stream.write(known);
+                    continue;
                 }
                 if (id == options.ids.configFinish()) {
                     stream.write(Unpooled.buffer().writeByte(options.ids.configFinishAck()));
@@ -682,7 +723,13 @@ public final class FakePlayers {
 
     private record Options(String host, int port, int count, long staggerMillis, String prefix,
                            boolean trace, long switchEvery, List<String> destinations,
-                           int keepAliveId, long holdSeconds, int protocol, Ids ids) {
+                           int keepAliveId, long holdSeconds, int protocol, Ids ids,
+                           String virtualHostOrNull) {
+
+        /** What to put in the handshake: the forced host if given, else the dialled one. */
+        String virtualHost() {
+            return virtualHostOrNull == null ? host : virtualHostOrNull;
+        }
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -699,6 +746,7 @@ public final class FakePlayers {
             // --keepalive overrides it, which is how a new version gets tried before its
             // row exists.
             int keepAliveId = -1;
+            String virtualHost = null;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
@@ -713,6 +761,7 @@ public final class FakePlayers {
                     case "--keepalive" -> keepAliveId = Integer.decode(args[++i]);
                     case "--for" -> holdSeconds = Long.parseLong(args[++i]);
                     case "--protocol" -> protocol = Integer.parseInt(args[++i]);
+                    case "--virtual-host" -> virtualHost = args[++i];
                     default -> {
                         System.out.println("""
                                 Connects fake players, to see where a proxy puts them.
@@ -729,6 +778,9 @@ public final class FakePlayers {
                                                      repeatable
                                   --protocol <n>     protocol version to speak, default
                                                      764 (1.20.2)
+                                  --virtual-host <h> hostname to claim in the handshake,
+                                                     for testing forced hosts. Defaults to
+                                                     --host
                                   --keepalive <id>   clientbound keep-alive id, overriding
                                                      the table. -1 answers none
                                   --for <seconds>    leave cleanly after this long,
@@ -778,7 +830,8 @@ public final class FakePlayers {
             }
 
             return new Options(host, port, count, stagger, prefix, trace, switchEvery,
-                    List.copyOf(destinations), keepAliveId, holdSeconds, protocol, ids);
+                    List.copyOf(destinations), keepAliveId, holdSeconds, protocol, ids,
+                    virtualHost);
         }
     }
 }

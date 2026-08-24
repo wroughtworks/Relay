@@ -1862,6 +1862,8 @@ def run_fake(args) -> int:
         command += ["--for", str(args.hold)]
     if args.protocol:
         command += ["--protocol", str(args.protocol)]
+    if args.virtual_host:
+        command += ["--virtual-host", args.virtual_host]
     if args.switch:
         command += ["--switch", str(args.switch)]
         # Everything configured, so switching exercises the real routing rather
@@ -2190,6 +2192,8 @@ other:
                       help="disconnect and stop after this long, instead of waiting for Ctrl+C")
     fake.add_argument("--protocol", type=int, default=0, metavar="N",
                       help="protocol version to speak (default 764, 1.20.2)")
+    fake.add_argument("--virtual-host", metavar="HOST",
+                      help="hostname to claim in the handshake, for testing forced hosts")
     fake.set_defaults(func=cmd_fake)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")

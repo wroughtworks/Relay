@@ -19,7 +19,7 @@ import java.util.logging.Level;
  * <p>The diagnostic half only observes; it changes nothing about how the server handles
  * a connection.
  */
-public final class RelayPlugin extends JavaPlugin {
+public final class RelayPlugin extends JavaPlugin implements Reporter {
 
     private ConnectionInspector inspector;
     private BackendApiProbe probe;
@@ -79,15 +79,18 @@ public final class RelayPlugin extends JavaPlugin {
         }
     }
 
-    void report(String message) {
+    @Override
+    public void report(String message) {
         getLogger().warning(message);
     }
 
-    void report(String message, Throwable cause) {
+    @Override
+    public void report(String message, Throwable cause) {
         getLogger().log(Level.WARNING, message, cause);
     }
 
-    void detail(String message) {
+    @Override
+    public void detail(String message) {
         getLogger().info(message);
     }
 }
