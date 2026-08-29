@@ -2,6 +2,7 @@ package dev.relay.control;
 
 import dev.relay.health.BackendHealth;
 import dev.relay.health.BackendStats;
+import dev.relay.metrics.Metrics;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.NetworkRoute;
 import dev.relay.proxy.RegisteredServer;
@@ -116,6 +117,17 @@ public final class ControlState {
                 proxy.groups().size(),
                 proxy.config().balance().configName(),
                 proxy.config().bind().getHostString() + ":" + proxy.config().bind().getPort());
+    }
+
+    /**
+     * Spec 10's counters, straight through.
+     *
+     * <p>Not reshaped on the way out. The snapshot is already the flat, immutable thing
+     * this class exists to produce, and a second shape would be one more place for the
+     * meaning of "bytes" to drift.
+     */
+    public Metrics.Snapshot metrics() {
+        return proxy.metrics().snapshot();
     }
 
     public List<ServerView> servers() {

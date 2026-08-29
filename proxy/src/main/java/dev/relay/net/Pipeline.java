@@ -22,6 +22,12 @@ public final class Pipeline {
     /** Diagnostic handler recording what closes a connection; present only when configured. */
     public static final String CLOSE_TRACER = "close-tracer";
 
+    /**
+     * Wire-byte counter. At the head, so it sees bytes as they are on the network --
+     * compressed and encrypted -- rather than as Relay thinks of them.
+     */
+    public static final String TRAFFIC = "traffic";
+
     /** PROXY protocol codecs, present only when configured. They sit ahead of everything. */
     public static final String PROXY_PROTOCOL_DECODER = "proxy-protocol-decoder";
     public static final String PROXY_PROTOCOL_HANDLER = "proxy-protocol-handler";

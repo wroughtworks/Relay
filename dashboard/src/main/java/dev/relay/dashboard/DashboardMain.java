@@ -116,7 +116,7 @@ public final class DashboardMain {
         // not this process's: the dashboard renders what Relay reports and invents nothing.
         server.get("/api/health", ctx -> ctx.json(Map.of(
                 "status", control.isConnected() ? "ok" : "disconnected")));
-        for (String what : new String[] {"overview", "servers", "groups", "players"}) {
+        for (String what : new String[] {"overview", "servers", "groups", "players", "metrics"}) {
             server.get("/api/" + what, ctx -> ctx.contentType("application/json").result(ask(what)));
         }
 
@@ -151,7 +151,7 @@ public final class DashboardMain {
      * object where a list belongs" will get one of them wrong.
      */
     private static String emptyFor(String what) {
-        return "overview".equals(what) ? "null" : "[]";
+        return "overview".equals(what) || "metrics".equals(what) ? "null" : "[]";
     }
 
     /** Forwards a proxy event to every browser watching, unchanged. */

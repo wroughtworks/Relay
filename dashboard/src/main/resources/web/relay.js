@@ -6,10 +6,11 @@
  * thing from different angles beats two views that happen to sit on the same page. */
 
 import { buildGraph, render as renderTopology, traceOf } from "./topology.js";
+import { chartCard, formatBytes, formatCount } from "./charts.js";
 
 const $ = id => document.getElementById(id);
 
-let data = { overview: null, servers: [], groups: [], players: [] };
+let data = { overview: null, servers: [], groups: [], players: [], metrics: null };
 /** Either {kind:"player", id:<routeId>} or {kind:"node", id:<graph node id>}. */
 let selection = null;
 let search = "";
@@ -122,10 +123,68 @@ function paint() {
     return d;
   }));
 
+  paintMetrics();
   paintTopology();
   paintTrace();
   paintServers();
   paintPlayers();
+}
+
+/**
+ * The §10 counters, as four sparklines and a line of totals.
+ *
+ * Traffic in and out share a scale so the two shapes can be compared; everything else
+ * is scaled to itself, because a switch rate and a byte rate have nothing to say to
+ * each other.
+ */
+function paintMetrics() {
+  const m = data.metrics;
+  const wrap = $("charts");
+  if (!m || !m.history || m.history.length < 2) {
+    wrap.replaceChildren(Object.assign(document.createElement("div"), {
+      className: "empty",
+      textContent: m ? "collecting — the first readings arrive within a few seconds"
+                     : "no metrics from the proxy",
+    }));
+    $("counters").textContent = "";
+    return;
+  }
+
+  const h = m.history;
+  const last = h[h.length - 1];
+  const peakTraffic = Math.max(...h.map(s => Math.max(s.bytesIn, s.bytesOut)));
+  const window = Math.round(h.length * m.sampleMillis / 60000);
+
+  wrap.replaceChildren(
+    chartCard({ label: "Players", reading: String(last.players),
+                sub: "last " + window + " min", values: h.map(s => s.players) }),
+    chartCard({ label: "To players", reading: formatBytes(last.bytesOut) + "/s",
+                sub: "peak " + formatBytes(peakTraffic) + "/s", tone: "alt",
+                values: h.map(s => s.bytesOut), ceiling: peakTraffic }),
+    chartCard({ label: "From players", reading: formatBytes(last.bytesIn) + "/s",
+                sub: "shared scale with outbound",
+                values: h.map(s => s.bytesIn), ceiling: peakTraffic }),
+    chartCard({ label: "Connections", reading: String(m.connectionsActive),
+                sub: last.connects.toFixed(2) + "/s new",
+                values: h.map(s => s.connections) }));
+
+  // Totals rather than rates: these are the numbers that only make sense cumulatively,
+  // and a sparkline of a monotonic counter is a diagonal line saying nothing.
+  const bits = [
+    formatCount(m.connectionsTotal) + " connections",
+    formatCount(m.switches) + " switches",
+    formatCount(m.failovers) + " failovers",
+    formatCount(m.routeDecisions) + " routing decisions",
+  ];
+  if (m.routeFailures > 0) bits.push(formatCount(m.routeFailures) + " routing failures");
+  if (m.connectionsFailed > 0) bits.push(formatCount(m.connectionsFailed) + " failed");
+  // Both sides, because the player side is what an uplink is billed for and the
+  // backend side is what a switch storm actually costs.
+  bits.push("players " + formatBytes(m.playerBytesIn) + " up / "
+            + formatBytes(m.playerBytesOut) + " down");
+  bits.push("backends " + formatBytes(m.backendBytesIn) + " in / "
+            + formatBytes(m.backendBytesOut) + " out");
+  $("counters").textContent = "since start — " + bits.join(" · ");
 }
 
 function paintTopology() {
@@ -285,10 +344,10 @@ function paintPlayers() {
 
 async function refresh() {
   try {
-    const [overview, servers, groups, players] = await Promise.all(
-      ["overview", "servers", "groups", "players"]
+    const [overview, servers, groups, players, metrics] = await Promise.all(
+      ["overview", "servers", "groups", "players", "metrics"]
         .map(p => fetch("api/" + p).then(r => r.json())));
-    data = { overview, servers, groups, players };
+    data = { overview, servers, groups, players, metrics };
     paint();
   } catch (e) {
     $("meta").textContent = "cannot reach the proxy";

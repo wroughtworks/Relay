@@ -69,6 +69,7 @@ public final class BackendConnector {
                     player.username());
             return;
         }
+        proxy.metrics().routeAttempted();
         tryCandidate(candidates, 0, null);
     }
 
@@ -136,6 +137,8 @@ public final class BackendConnector {
             return;
         }
 
+        proxy.metrics().routeAttempted();
+        proxy.metrics().failover();
         LOG.info("Moving {} off {} after it dropped them; trying {}",
                 player.username(), lost.name(), names(candidates));
         // Said now, while the player is still in play state: the switch takes them out of
@@ -147,6 +150,7 @@ public final class BackendConnector {
     }
 
     private void giveUp(Component reason) {
+        proxy.metrics().routeFailed();
         player.endRecovery();
         if (verbatimKick != null && player.connection().state() == ProtocolState.PLAY) {
             LOG.info("Nothing else would take {}; passing on the kick they were given",

@@ -241,6 +241,7 @@ public final class ControlServer {
                 case "servers" -> state.servers();
                 case "groups" -> state.groups();
                 case "players" -> state.players();
+                case "metrics" -> state.metrics();
                 default -> null;
             };
 

@@ -1,9 +1,11 @@
 package dev.relay.net;
 
+import dev.relay.metrics.Metrics;
 import dev.relay.net.pipeline.CloseTracer;
 import dev.relay.net.pipeline.MinecraftDecoder;
 import dev.relay.net.pipeline.MinecraftEncoder;
 import dev.relay.net.pipeline.VarintFrameDecoder;
+import dev.relay.net.pipeline.TrafficCounter;
 import dev.relay.net.pipeline.VarintLengthEncoder;
 import dev.relay.protocol.PacketDirection;
 import io.netty.channel.Channel;
@@ -39,16 +41,20 @@ public final class ConnectionInitializer {
      */
     public static MinecraftConnection initialize(Channel channel, PacketDirection inbound, int readTimeoutMillis,
                                                  boolean acceptProxyProtocol, boolean sendProxyProtocol) {
-        return initialize(channel, inbound, readTimeoutMillis, acceptProxyProtocol, sendProxyProtocol, null);
+        return initialize(channel, inbound, readTimeoutMillis, acceptProxyProtocol, sendProxyProtocol,
+                null, null);
     }
 
     /**
      * @param traceDescription when non-null, installs a {@link CloseTracer} under this
      *                         label to record what ends the connection
+     * @param metrics          when non-null, counts wire bytes on this channel. Null in
+     *                         tests, which drive pipelines directly and have no proxy to
+     *                         report to
      */
     public static MinecraftConnection initialize(Channel channel, PacketDirection inbound, int readTimeoutMillis,
                                                  boolean acceptProxyProtocol, boolean sendProxyProtocol,
-                                                 String traceDescription) {
+                                                 String traceDescription, Metrics metrics) {
         MinecraftDecoder decoder = new MinecraftDecoder(inbound);
         MinecraftEncoder encoder = new MinecraftEncoder(inbound.opposite());
 
@@ -86,6 +92,13 @@ public final class ConnectionInitializer {
             // emits is not wrapped in a length prefix by the frame encoder, and lands on
             // the wire exactly as the peer expects to read it.
             pipeline.addFirst(Pipeline.PROXY_PROTOCOL_ENCODER, HAProxyMessageEncoder.INSTANCE);
+        }
+        if (metrics != null) {
+            // Added last, so it ends up at the very head and stays there: it must see the
+            // bytes the socket actually carried, which includes a PROXY header the encoder
+            // above emits outside Minecraft's own framing.
+            pipeline.addFirst(Pipeline.TRAFFIC,
+                    new TrafficCounter(metrics, inbound == PacketDirection.SERVERBOUND));
         }
         return connection;
     }

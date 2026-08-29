@@ -14,6 +14,7 @@ import dev.relay.companion.CompanionSupervisor;
 import dev.relay.control.ControlServer;
 import dev.relay.forwarding.ModernForwarding;
 import dev.relay.health.HealthChecker;
+import dev.relay.metrics.Metrics;
 import dev.relay.protocol.PacketDirection;
 import dev.relay.protocol.ProtocolState;
 import dev.relay.protocol.ProtocolVersion;
@@ -57,6 +58,8 @@ public final class RelayProxy {
     private final Map<String, ServerGroup> groups = new LinkedHashMap<>();
     private final PlayerRegistry players = new PlayerRegistry();
     private final ProxyEvents events = new ProxyEvents();
+    /** Spec 10's counters. Player count is read from the registry rather than mirrored. */
+    private final Metrics metrics = new Metrics(() -> players.count());
     private HealthChecker healthChecker;
     private Path pidFile;
     private ControlServer control;
@@ -107,6 +110,10 @@ public final class RelayProxy {
 
     public PlayerRegistry players() {
         return players;
+    }
+
+    public Metrics metrics() {
+        return metrics;
     }
 
     public ProxyEvents events() {
@@ -231,7 +238,13 @@ public final class RelayProxy {
                         MinecraftConnection connection = ConnectionInitializer.initialize(
                                 channel, PacketDirection.SERVERBOUND, config.readTimeoutMillis(),
                                 config.proxyProtocolReceive(), false,
-                                config.traceCloses() ? "player " + channel.remoteAddress() : null);
+                                config.traceCloses() ? "player " + channel.remoteAddress() : null,
+                                metrics);
+                        // Counted here rather than at login: a connection that never gets
+                        // past the handshake still consumed a socket, and the gap between
+                        // this and the player count is exactly what a scan looks like.
+                        metrics.connectionOpened();
+                        channel.closeFuture().addListener(closed -> metrics.connectionClosed());
                         connection.setSessionHandler(new HandshakeSessionHandler(RelayProxy.this, connection));
                     }
                 });
@@ -263,6 +276,15 @@ public final class RelayProxy {
             LOG.info("Balancing  {}", config.balance().configName());
         }
 
+        // Switches are counted off the event stream rather than at each site that
+        // performs one. There are three such sites and they will not stay at three;
+        // a listener cannot fall out of step with them.
+        events.addListener(event -> {
+            if (event.kind() == ProxyEvents.Kind.PLAYER_SWITCHED_SERVER) {
+                metrics.switched();
+            }
+        });
+        metrics.start();
         if (config.healthEnabled()) {
             healthChecker = new HealthChecker(this);
             healthChecker.start();
@@ -382,6 +404,7 @@ public final class RelayProxy {
         if (control != null) {
             control.stop();
         }
+        metrics.stop();
         if (healthChecker != null) {
             healthChecker.stop();
         }
@@ -452,7 +475,8 @@ public final class RelayProxy {
                                 false, config.proxyProtocolSend(),
                                 config.traceCloses()
                                         ? "backend " + target.name() + " for " + player.username()
-                                        : null);
+                                        : null,
+                                metrics);
                         connection.setVersion(player.version());
                         attempt.setConnection(connection);
                     }
