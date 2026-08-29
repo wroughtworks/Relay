@@ -7,6 +7,7 @@ import dev.relay.proxy.ConnectionResult;
 import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
+import dev.relay.proxy.ServerGroup;
 import dev.relay.session.BackendConnector;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -58,9 +59,10 @@ public final class ServerCommand implements Command {
             return;
         }
 
-        Optional<RegisteredServer> target = proxy.server(args.get(0));
+        String requested = args.get(0);
+        Optional<RegisteredServer> target = proxy.select(requested);
         if (target.isEmpty()) {
-            source.sendMessage(Component.text("There is no server called '" + args.get(0) + "'",
+            source.sendMessage(Component.text("There is no server or group called '" + requested + "'",
                     NamedTextColor.RED));
             listServers(source, player);
             return;
@@ -68,8 +70,30 @@ public final class ServerCommand implements Command {
 
         RegisteredServer server = target.get();
         ServerConnection current = player.connectedServer();
-        if (current != null && current.target() == server) {
+        RegisteredServer here = current == null ? null : current.target();
+
+        // A group is one destination as far as the player is concerned, so being on any
+        // of its members already counts as being there. Moving them to a sibling would
+        // be a pointless round trip through configuration for no change of scenery.
+        Optional<ServerGroup> group = proxy.group(requested);
+        if (group.isPresent() && here != null && group.get().members().contains(here)) {
+            source.sendMessage(Component.text("You are already on " + group.get().name()
+                    + ", on " + here.name(), NamedTextColor.RED));
+            return;
+        }
+        if (here == server) {
             source.sendMessage(Component.text("You are already on " + server.name(), NamedTextColor.RED));
+            return;
+        }
+
+        // Refused rather than allowed as a last resort. Routing demotes a draining or
+        // failing backend so it is picked only when nothing else will do, which is right
+        // for a player who just needs somewhere -- but someone who typed its name is
+        // owed the reason instead of being quietly sent to a server about to restart.
+        if (!server.acceptsNewPlayers()) {
+            source.sendMessage(Component.text(server.name() + " is not accepting players ("
+                    + server.health().state().name().toLowerCase(java.util.Locale.ROOT) + ")",
+                    NamedTextColor.RED));
             return;
         }
 
@@ -99,14 +123,37 @@ public final class ServerCommand implements Command {
         }
     }
 
+    /**
+     * Lists what can be typed, with grouped backends shown under their group.
+     *
+     * <p>Members are still listed individually. A player normally wants the group and
+     * lets Relay choose, but naming a member directly is how you rejoin the server your
+     * base is on, so hiding them would take away the only way to ask for it.
+     */
     private void listServers(CommandSource source, ConnectedPlayer player) {
         ServerConnection current = player.connectedServer();
-        StringJoiner joiner = new StringJoiner(", ");
-        for (RegisteredServer server : proxy.servers()) {
-            boolean here = current != null && current.target() == server;
-            joiner.add(here ? server.name() + " (here)" : server.name());
+        RegisteredServer here = current == null ? null : current.target();
+
+        for (ServerGroup group : proxy.groups()) {
+            StringJoiner members = new StringJoiner(", ");
+            for (RegisteredServer member : group.members()) {
+                members.add(member == here ? member.name() + " (here)" : member.name());
+            }
+            source.sendMessage(Component.text(group.name() + ": ", NamedTextColor.GOLD)
+                    .append(Component.text(members.toString(), NamedTextColor.WHITE))
+                    .append(Component.text(" (" + group.playerCount() + " online)", NamedTextColor.GRAY)));
         }
-        source.sendMessage(Component.text("Servers: ", NamedTextColor.GOLD)
-                .append(Component.text(joiner.toString(), NamedTextColor.WHITE)));
+
+        StringJoiner ungrouped = new StringJoiner(", ");
+        for (RegisteredServer server : proxy.servers()) {
+            if (proxy.groups().stream().anyMatch(group -> group.members().contains(server))) {
+                continue;
+            }
+            ungrouped.add(server == here ? server.name() + " (here)" : server.name());
+        }
+        if (ungrouped.length() > 0) {
+            source.sendMessage(Component.text("Servers: ", NamedTextColor.GOLD)
+                    .append(Component.text(ungrouped.toString(), NamedTextColor.WHITE)));
+        }
     }
 }

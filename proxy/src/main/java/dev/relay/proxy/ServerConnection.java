@@ -8,6 +8,14 @@ import java.util.concurrent.CompletableFuture;
 /** Relay's side of one backend socket, on behalf of one player. */
 public final class ServerConnection {
 
+    /**
+     * How long a detached backend gets to notice and close its own side.
+     *
+     * <p>Long enough for a local server to see end of stream and react, short enough that
+     * a backend which ignores it is not left half-open for any length of time.
+     */
+    private static final long DETACH_LINGER_MILLIS = 1000;
+
     private final RegisteredServer target;
     private final ConnectedPlayer player;
     private final CompletableFuture<ConnectionResult> result = new CompletableFuture<>();
@@ -86,7 +94,10 @@ public final class ServerConnection {
         }
         MinecraftConnection current = connection;
         if (current != null) {
-            current.close();
+            // Gracefully, because a backend being switched away from is still mid-write.
+            // A plain close resets the socket and makes it log a stack trace for what is
+            // a completely ordinary event.
+            current.closeGracefully(DETACH_LINGER_MILLIS);
         }
     }
 

@@ -93,6 +93,21 @@ intercept-commands = true
 # accepts the connection and then never answers.
 proxy-protocol-send = false
 
+# ------------------------------------------------------------ backend failure
+#
+# When a backend a player is on goes away -- a crash, a restart, a kick from the
+# server itself -- move that player to the next server in the "try" list below
+# instead of ending their session.
+#
+# This is the difference between restarting a server being routine and it being
+# an outage. With it off, everyone on that backend is returned to the multiplayer
+# menu; with it on, they land in the lobby and can walk back when it returns.
+#
+# Relay gives up after three moves in under thirty seconds, so two backends that
+# both accept players and immediately drop them cannot bounce someone forever.
+fallback-on-backend-loss = true
+
+
 # ----------------------------------------------------------------- client api
 #
 # Lets a client-side mod talk to the proxy over the "relay:api_v1" plugin channel:
@@ -106,11 +121,30 @@ proxy-protocol-send = false
 # See docs/client-api.md for the wire format.
 client-api = true
 
+
+# ----------------------------------------------------------------- backend api
+#
+# Lets a plugin on a backend server talk to the proxy over plugin messages, the
+# way BungeeCord has always worked: move players between servers, ask who is
+# online where, send cross-server messages, and relay custom payloads.
+#
+# Wire-compatible with BungeeCord's "bungeecord:main" channel, so a plugin
+# written for BungeeCord or Velocity works unchanged. Relay's own "relay:main"
+# channel is accepted too.
+#
+# Backends are trusted: unlike the client API, these requests are not permission
+# checked, because a backend already holds the forwarding secret. Keep backend
+# ports unreachable from outside your network.
+backend-api = true
+
+# ----------------------------------------------------------------- diagnostics
+
 # Record what closes each connection, with a stack trace naming the code that did
-# it. Diagnostic only -- turn it on when a connection is dying for no stated
-# reason, since "the peer hung up" and "something here hung up" are otherwise
-# indistinguishable once the socket is gone.
-trace-closes = false
+# it. On by default: it costs one handler per connection and logs only when a
+# connection ends, and the alternative is a close that leaves no trace of who
+# caused it -- exactly the situation where it is needed and too late to enable.
+# The detail appears at DEBUG; failed writes and pipeline faults warn regardless.
+trace-closes = true
 
 
 # Read a PROXY header from incoming connections. Only for when something sits in
@@ -120,6 +154,156 @@ trace-closes = false
 # to the listener can claim any source address, defeating per-IP bans and logging.
 # Enable it only when the bind port is reachable solely by that upstream proxy.
 proxy-protocol-receive = false
+
+
+# ------------------------------------------------------------------- groups
+#
+# Several interchangeable backends under one name. Players type "/server
+# survival" and land on whichever member is the better host right now; naming a
+# member directly still works, which is how someone rejoins the server their
+# base is on.
+#
+# Usually there is nothing to write here. Backends numbered with a dash or an
+# underscore group themselves: survival-01 and survival-02 are already a group
+# called "survival". Only a separator followed by digits counts, so a name like
+# "pvp-arena" stays one server.
+#
+# A group is a destination anywhere a backend is: "try" above, forced hosts
+# below, /send, and both plugin-message APIs. Losing a member is the point --
+# a player whose server dies is handed to a sibling before Relay looks any
+# further down "try".
+#
+# Write a group out only to say something the naming does not: an odd set, or
+# members that are not numbered. An explicit entry wins over the derived one,
+# and a real backend's name always wins over a group.
+#
+# [groups]
+# hub = ["lobby", "spawn"]
+
+
+# How a group picks. The choice only ever orders the members -- the preferred
+# one is tried first and the rest catch its failures -- so balancing and
+# failover are the same mechanism rather than two that have to agree.
+#
+#   least-players    fewest players first. Fills an empty server before a busy
+#                    one, and self-corrects as people come and go.
+#   round-robin      each join takes the next member in turn. Better when
+#                    players arrive in waves and player counts lag the truth.
+#   random           cheap, stateless, even enough over any real number of joins.
+#   first-available  configured order, always. Not balancing: later members
+#                    exist only to catch failures of earlier ones.
+#
+# Ties keep configured order in every strategy. This must stay above the first
+# [table] header: TOML reads a bare key after one as belonging to that table,
+# and it would silently become servers.balance instead.
+balance = "least-players"
+
+
+# ------------------------------------------------------------------- health
+#
+# Relay pings each backend on an interval -- the same server-list ping a client
+# makes -- so it knows a server is down before a player does. Without it, a dead
+# backend is discovered by sending someone to it: they wait out the connect
+# timeout, get an error, and the next player repeats the whole thing.
+#
+# A backend that fails checks is moved to the back of its group rather than
+# removed, so a network whose health checking is itself broken degrades to
+# trying anyway instead of refusing every join.
+#
+# failures-before-down is hysteresis: one dropped packet or one long GC pause
+# will fail a single check against a perfectly healthy server, and reacting to
+# that would empty it. Recovery is immediate in the other direction.
+
+# ------------------------------------------------------------------ storage
+#
+# A SQLite file beside this one, holding what happened rather than how things
+# are configured: player sessions and the backends they visited, backend health
+# changes, and the metric samples the dashboard charts. Configuration stays here
+# in TOML and is never duplicated into the database.
+#
+# The proxy owns this file rather than the dashboard. History has to be recorded
+# whether or not anyone is watching, and the things that will live here later --
+# bans, whitelist -- have to be answerable during a login, when a companion may
+# be down or absent.
+#
+# Writes go through one background thread and are dropped rather than queued
+# without limit if the disk falls behind, so storage can never slow a player's
+# connection. Turning it off loses history and nothing else.
+
+[storage]
+enabled = true
+file = "relay.db"
+
+# How long rows are kept. Sessions, health changes, metric samples and audit
+# events older than this are deleted hourly. 0 keeps everything forever, which
+# is a decision about disk rather than about Relay.
+retain-days = 14
+
+
+[health]
+enabled = true
+interval = 10000
+timeout = 3000
+failures-before-down = 3
+
+
+# --------------------------------------------------------------------- node
+#
+# This proxy's identity (spec 7.9). One node today, so it is only a label --
+# but it is the label a player's route is read against, and every node called
+# "relay" would make those routes useless the day there are two.
+#
+# Defaults to the machine's hostname.
+#
+# node-name = "relay-01"
+
+
+# ------------------------------------------------------------------ control
+#
+# The private channel companion processes use to watch and question the proxy:
+# newline-delimited JSON on loopback, gated by a token generated fresh at every
+# start and handed to companions through their environment.
+#
+# It publishes nothing on its own and answers nobody without the token. Turn it
+# off and no companion can start, because none of them would have any way to
+# reach the proxy.
+
+[control]
+enabled = true
+bind = "127.0.0.1:25580"
+
+
+# --------------------------------------------------------------- companions
+#
+# Programs Relay starts, supervises and restarts beside itself, with their
+# output folded into this log.
+#
+# They are separate processes on purpose. The dashboard needs Jetty, Javalin
+# and the Kotlin runtime -- several megabytes against Relay's own couple of
+# hundred kilobytes of code -- and a Discord bot would bring a second HTTP and
+# WebSocket stack that would eventually meet Netty. None of that belongs in the
+# process carrying player traffic, where a leak costs players their session
+# rather than an operator a page refresh.
+#
+# command is a list of arguments, not a string. Splitting a command line
+# correctly is a job nobody gets right first time, and paths with spaces are
+# the normal case on Windows.
+#
+# Relay puts RELAY_CONTROL_HOST, RELAY_CONTROL_PORT and RELAY_CONTROL_TOKEN in
+# each companion's environment; anything under [companions.<name>.environment]
+# is added to that.
+#
+# On shutdown a companion is told over the control channel and given five
+# seconds to exit on its own, because Windows has no signal to ask a process to
+# stop politely and a hard kill skips its shutdown entirely.
+
+# [companions.dashboard]
+# command = ["java", "-jar", "companions/relay-dashboard.jar"]
+# enabled = true
+# restart = true
+#
+# [companions.dashboard.environment]
+# RELAY_DASHBOARD_PORT = "8080"
 
 
 # ----------------------------------------------------------------- backends
@@ -148,6 +332,8 @@ survival = "127.0.0.1:25567"
 
 [permissions]
 default = ["relay.command.server", "relay.command.glist"]
+# Not granted by default: /find and /send move other people around, and
+# /drain takes a backend out of rotation before a restart.
 # Grant by username or by UUID:
 # "yourname" = ["relay.*"]
 # "00000000-0000-0000-0000-000000000000" = ["relay.command.send"]

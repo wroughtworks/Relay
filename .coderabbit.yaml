@@ -1,0 +1,138 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# CodeRabbit review settings for Relay.
+#
+# CodeRabbit is a GitHub App, not a workflow: nothing in .github runs it. This file
+# only shapes what it says once it is installed on the repository.
+#
+# The path_instructions below are the part worth maintaining. A generic AI reviewer
+# will find style nits in a Netty proxy all day and miss the two classes of bug that
+# have actually cost time here -- wrong packet ids, and tests that pass whether or not
+# the code works. Those are written out explicitly so they get looked for.
+
+language: en-GB
+
+# Capped at 250 characters by the schema, so the detail lives in path_instructions.
+tone_instructions: >-
+  Be direct. Give one concrete failure scenario rather than a list of possibilities.
+  This codebase comments the "why" deliberately: never suggest deleting an explanatory
+  comment, and never ask for one that restates the code.
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  related_issues: true
+  related_prs: true
+  poem: false
+  in_progress_fortune: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Generated, vendored, or machine-local. Reviewing these produces noise only.
+  path_filters:
+    - "!**/build/**"
+    - "!**/.gradle/**"
+    - "!gradle/wrapper/**"
+    - "!gradlew"
+    - "!gradlew.bat"
+    - "!**/__pycache__/**"
+    - "!logs/**"
+    - "!run/**"
+    # Mojang's own generated packet reports. Checked in as evidence, never edited by
+    # hand -- a diff here is either a new version or a mistake, and reviewing the
+    # numbers line by line says nothing either way.
+    - "!proxy/src/test/resources/protocol/packets-*.json"
+
+  path_instructions:
+    - path: "proxy/src/main/java/dev/relay/protocol/**"
+      instructions: >-
+        Packet ids are the highest-risk values in this project: 26 of them were wrong
+        at once because they had been inferred from the protocol layout rather than
+        read from a source. Flag any new or changed id that is not backed by a
+        checked-in report under proxy/src/test/resources/protocol, and flag any comment
+        justifying an id by its relationship to another packet ("tracks X's shifts",
+        "X plus two") -- both of those rules were believed here and both were false.
+        The correct source is the server's own report, generated with
+        `java -DbundlerMainClass=net.minecraft.data.Main -jar <server>.jar --reports`.
+
+    - path: "proxy/src/main/java/dev/relay/net/**"
+      instructions: >-
+        Netty lifecycle code. Watch for: closing a channel that may still have unread
+        inbound data (TCP answers with RST, not FIN, and the peer loses whatever it
+        last sent); addListener on a promise that may be void; and ByteBuf ownership --
+        who releases, and on which path when an exception is thrown.
+
+    - path: "paper-plugin/src/main/java/**"
+      instructions: >-
+        This runs inside someone else's server, so it must never be the reason a
+        connection ends. Any handler that throws, blocks the main thread, or assumes a
+        Netty promise can carry a listener is a defect regardless of how useful the
+        diagnostic is. It also targets Java 17 (the proxy targets 21) -- flag Java 18+
+        APIs here.
+
+    - path: "proxy/src/test/java/**"
+      instructions: >-
+        Judge whether the test would fail if the behaviour under test regressed. Tests
+        here have twice passed while the bug they described was live: one drove a
+        switch against a fake backend that went silent, when the bug only appeared
+        against a backend that kept talking. Prefer assertions of ordering and absence
+        ("this must not arrive after that") over assertions of mere presence, and flag
+        any new test whose setup avoids the conditions the bug needs.
+
+    - path: "relay.py"
+      instructions: >-
+        The developer tool. Two standing rules: anything that edits relay.toml must
+        restore it in a `finally`, because a config left in offline mode accepts anyone
+        who claims a name; and long-running child processes must be stopped in a way
+        that runs their shutdown path, since a signal on Windows is TerminateProcess
+        and skips shutdown hooks entirely.
+
+    - path: "docs/**"
+      instructions: >-
+        Check claims against the code rather than for prose quality. This documentation
+        states which values are verified and which are inferred, and that distinction
+        is load-bearing -- a row silently promoted from "inferred" to "verified" is a
+        real defect.
+
+  tools:
+    pmd:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    hadolint:
+      enabled: true
+    actionlint:
+      enabled: true
+    # The forwarding secret is an HMAC key shared with every backend. relay.toml is
+    # gitignored, which is the actual defence; this is the backstop for the day
+    # somebody pastes one into a doc or a test fixture.
+    gitleaks:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: local
+  # docs/protocol-ids.md in particular is the standing record of which packet ids are
+  # proven and which are not, and it is the document a protocol change has to agree
+  # with. CLAUDE.md does not exist yet; it is listed so it is picked up if it is added.
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "docs/**/*.md"
+      - "README.md"
+      - "CLAUDE.md"

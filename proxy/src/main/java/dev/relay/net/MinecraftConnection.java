@@ -15,6 +15,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.socket.DuplexChannel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.ReferenceCountUtil;
@@ -81,6 +82,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
     public SocketAddress remoteAddress() {
         SocketAddress declared = realRemoteAddress;
         return declared != null ? declared : channel.remoteAddress();
+    }
+
+    /**
+     * The peer that spoke PROXY protocol on a player's behalf, or {@code null}.
+     *
+     * <p>When a header has been read, the socket's own peer is no longer the player: it
+     * is whatever sat in front and declared them. That is the only evidence Relay has
+     * that an upstream exists at all, and it is worth keeping rather than discarding
+     * once the real address has been recovered from it.
+     */
+    public SocketAddress upstreamAddress() {
+        return realRemoteAddress == null ? null : channel.remoteAddress();
     }
 
     /** Called by {@link ProxyProtocolHandler} once an inbound PROXY header is parsed. */
@@ -220,12 +233,69 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         future.addListener(ChannelFutureListener.CLOSE);
     }
 
+    /**
+     * Sends a frame received from elsewhere, then closes once it has reached the socket.
+     *
+     * <p>For handing on a packet Relay cannot rebuild: a backend's kick, whose reason is
+     * network NBT from 1.20.3 onward and which Relay writes but cannot read. Forwarding
+     * the bytes keeps the server's exact wording rather than replacing it with a summary.
+     */
+    public void closeWithFrame(ByteBuf frame) {
+        if (!isActive()) {
+            frame.release();
+            return;
+        }
+        closed = true;
+        closedLocally = true;
+        channel.writeAndFlush(frame).addListener(ChannelFutureListener.CLOSE);
+    }
+
     public void close() {
         closed = true;
         closedLocally = true;
         if (channel.isActive()) {
             channel.close();
         }
+    }
+
+    /**
+     * Closes the way a peer would prefer: a half-close first, then a full one.
+     *
+     * <p>Closing a socket outright while data is still arriving on it makes TCP answer
+     * with a reset, and the peer's next write fails. A backend mid-switch is always in
+     * that state -- it has no idea the player is leaving and keeps sending world updates
+     * -- so a plain close made Paper log a stack trace, {@code Connection reset by peer},
+     * every single time anyone typed {@code /server}.
+     *
+     * <p>Shutting down only the outbound half sends a FIN instead. The backend reads end
+     * of stream, sees an ordinary disconnect, and closes its own side; reads keep draining
+     * here in the meantime so nothing is left unread to provoke a reset. If the peer does
+     * not take the hint, {@code linger} closes it properly anyway &mdash; a half-open
+     * socket left forever would be worse than the noise this avoids.
+     */
+    public void closeGracefully(long lingerMillis) {
+        closed = true;
+        closedLocally = true;
+        if (!channel.isActive()) {
+            return;
+        }
+        if (!(channel instanceof DuplexChannel duplex)) {
+            channel.close();
+            return;
+        }
+
+        // Reading stays on deliberately. Anything still in flight is discarded by the
+        // session handler, and draining it is what keeps the close from being a reset.
+        duplex.shutdownOutput().addListener(future -> {
+            if (!future.isSuccess()) {
+                channel.close();
+            }
+        });
+        channel.eventLoop().schedule(() -> {
+            if (channel.isActive()) {
+                channel.close();
+            }
+        }, lingerMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     /**

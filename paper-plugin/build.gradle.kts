@@ -15,6 +15,13 @@ dependencies {
     // Netty ships with the server; needed at compile time for the pipeline handler.
     compileOnly(libs.netty.transport)
     compileOnly(libs.netty.handler)
+
+    // The connection watcher is a Netty handler, and its worst bug to date was one only
+    // a real pipeline could show. EmbeddedChannel gives it one without a server.
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.netty.transport)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 tasks.processResources {
@@ -27,5 +34,5 @@ tasks.processResources {
 }
 
 tasks.jar {
-    archiveBaseName = "RelayDebug"
+    archiveBaseName = "Relay"
 }

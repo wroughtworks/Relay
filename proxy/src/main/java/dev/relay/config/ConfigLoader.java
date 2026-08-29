@@ -1,7 +1,9 @@
 package dev.relay.config;
 
 import com.electronwill.nightconfig.core.Config;
+import com.electronwill.nightconfig.core.io.ParsingMode;
 import com.electronwill.nightconfig.toml.TomlFormat;
+import dev.relay.config.RelayConfig.CompanionEntry;
 import dev.relay.config.RelayConfig.ProtocolOverride;
 import dev.relay.config.RelayConfig.ServerEntry;
 import org.slf4j.Logger;
@@ -22,6 +24,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Reads {@code relay.toml}, writing a commented starter file on first run.
@@ -31,6 +36,14 @@ import java.util.Map;
  * boot: the former fails at 3am under load, the latter fails while someone is watching.
  */
 public final class ConfigLoader {
+
+    /**
+     * A backend that looks like one of several numbered copies.
+     *
+     * <p>The separator is required: without it {@code s3} would name a group {@code s},
+     * and a rule that fires on names nobody meant as a group is worse than no rule.
+     */
+    private static final Pattern NUMBERED_SERVER = Pattern.compile("^(.*[^-_])[-_]\\d+$");
 
     private static final Logger LOG = LoggerFactory.getLogger(ConfigLoader.class);
 
@@ -58,7 +71,13 @@ public final class ConfigLoader {
         }
 
         try (Reader reader = new StringReader(text)) {
-            Config config = TomlFormat.instance().createParser().parse(reader);
+            // Parsed into a config backed by a LinkedHashMap rather than letting the
+            // parser build its own. Nightconfig's default is a HashMap, so declaration
+            // order is lost -- and this file depends on it in three places: the /server
+            // listing, the startup log, and the implicit fallback when no "try" list is
+            // given, which otherwise sends players to an arbitrary backend.
+            Config config = Config.of(LinkedHashMap::new, TomlFormat.instance());
+            TomlFormat.instance().createParser().parse(reader, config, ParsingMode.REPLACE);
             return parse(config, path);
         }
     }
@@ -78,6 +97,21 @@ public final class ConfigLoader {
         }
     }
 
+    /**
+     * The machine's hostname, or a generic label if it will not say.
+     *
+     * <p>A better default than "relay": on the day there are two nodes, routes read
+     * against distinct names without anyone having configured anything.
+     */
+    private static String defaultNodeName() {
+        try {
+            String host = java.net.InetAddress.getLocalHost().getHostName();
+            return host == null || host.isBlank() ? "relay" : host;
+        } catch (java.net.UnknownHostException e) {
+            return "relay";
+        }
+    }
+
     /** A fresh forwarding secret, so a new install is never deployed with a shared one. */
     private static String generateSecret() {
         byte[] bytes = new byte[32];
@@ -87,6 +121,10 @@ public final class ConfigLoader {
 
     private static RelayConfig parse(Config config, Path path) {
         InetSocketAddress bind = parseAddress(require(config, "bind"), "bind");
+        // Spec 7.9: a stable identity for this node. One proxy today, so it is only a
+        // label -- but it is the label a player's route is read against, and hard-coding
+        // "relay" now would mean every route on every node looking identical later.
+        String nodeName = config.getOrElse("node-name", ConfigLoader::defaultNodeName);
         String motd = config.getOrElse("motd", "A Relay proxy");
         int maxPlayers = config.getIntOrElse("max-players", 100);
         boolean showOnlineCount = config.getOrElse("show-online-count", Boolean.TRUE);
@@ -104,19 +142,55 @@ public final class ConfigLoader {
         int connectTimeout = config.getIntOrElse("connect-timeout", 5000);
         int readTimeout = config.getIntOrElse("read-timeout", 30000);
         boolean interceptCommands = config.getOrElse("intercept-commands", Boolean.TRUE);
+        // On by default: without it, restarting one backend returns every player on
+        // it to the multiplayer menu instead of the lobby.
+        boolean fallbackOnBackendLoss = config.getOrElse("fallback-on-backend-loss", Boolean.TRUE);
         boolean proxyProtocolReceive = config.getOrElse("proxy-protocol-receive", Boolean.FALSE);
         boolean proxyProtocolSend = config.getOrElse("proxy-protocol-send", Boolean.FALSE);
         boolean clientApiEnabled = config.getOrElse("client-api", Boolean.TRUE);
+        boolean backendApiEnabled = config.getOrElse("backend-api", Boolean.TRUE);
         // On by default: it costs one handler per connection and logs only when a
         // connection ends, and the alternative is a close that leaves no trace of who
         // caused it -- which is exactly the situation where it is needed and too late
         // to switch on.
         boolean traceCloses = config.getOrElse("trace-closes", Boolean.TRUE);
 
+        // On by default, unlike the dashboard: this one only makes routing better, and
+        // costs one status ping per backend per interval -- the same request a server
+        // list refresh makes.
+        // On by default. It is one small file beside the config, it is what makes the
+        // dashboard able to answer "what happened last night", and a proxy that records
+        // nothing cannot be asked afterwards.
+        boolean storageEnabled = config.getOrElse("storage.enabled", Boolean.TRUE);
+        String storageFile = config.getOrElse("storage.file", "relay.db");
+        int storageRetainDays = config.getIntOrElse("storage.retain-days", 14);
+
+        boolean healthEnabled = config.getOrElse("health.enabled", Boolean.TRUE);
+        int healthInterval = config.getIntOrElse("health.interval", 10000);
+        int healthTimeout = config.getIntOrElse("health.timeout", 3000);
+        int healthFailures = config.getIntOrElse("health.failures-before-down", 3);
+        if (healthInterval < 1000) {
+            throw new IllegalArgumentException("health.interval must be at least 1000ms, got " + healthInterval);
+        }
+        if (healthFailures < 1) {
+            throw new IllegalArgumentException("health.failures-before-down must be at least 1, got "
+                    + healthFailures);
+        }
+
+        // On by default, but it publishes nothing on its own: it is loopback, token
+        // gated, and silent until a companion connects. Off, no companion can start.
+        boolean controlEnabled = config.getOrElse("control.enabled", Boolean.TRUE);
+        InetSocketAddress controlBind = parseAddress(
+                config.getOrElse("control.bind", "127.0.0.1:25580"), "control.bind");
+        List<CompanionEntry> companions = parseCompanions(config);
+
         Map<String, ServerEntry> servers = parseServers(config);
         if (servers.isEmpty()) {
             throw new IllegalArgumentException("No backends defined; add at least one entry under [servers]");
         }
+
+        Map<String, List<String>> groups = parseGroups(config, servers);
+        BalanceStrategy balance = BalanceStrategy.parse(config.getOrElse("balance", "least-players"));
 
         List<String> tryOrder = config.getOrElse("try", List.<String>of());
         if (tryOrder.isEmpty()) {
@@ -124,20 +198,21 @@ public final class ConfigLoader {
             tryOrder = List.of(servers.keySet().iterator().next());
         }
         for (String name : tryOrder) {
-            if (!servers.containsKey(name)) {
-                throw new IllegalArgumentException("try lists unknown backend '" + name + "'");
-            }
+            requireDestination(servers, groups, name, "try");
         }
 
-        Map<String, List<String>> forcedHosts = parseForcedHosts(config, servers);
+        Map<String, List<String>> forcedHosts = parseForcedHosts(config, servers, groups);
         Map<String, List<String>> permissions = parsePermissions(config);
         List<ProtocolOverride> overrides = parseProtocolOverrides(config);
 
         return new RelayConfig(path.toAbsolutePath(),
-                bind, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
+                bind, nodeName, motd, maxPlayers, showOnlineCount, onlineMode, forwardingMode,
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
-                interceptCommands, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, traceCloses,
-                servers, tryOrder, forcedHosts, permissions, overrides);
+                interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
+                healthEnabled, healthInterval, healthTimeout, healthFailures,
+                storageEnabled, storageFile, storageRetainDays,
+                controlEnabled, controlBind, companions,
+                servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }
 
     /**
@@ -176,7 +251,142 @@ public final class ConfigLoader {
         return servers;
     }
 
-    private static Map<String, List<String>> parseForcedHosts(Config config, Map<String, ServerEntry> servers) {
+    /**
+     * Reads {@code [groups]}: a name, and the interchangeable backends behind it.
+     *
+     * <p>Validated strictly, because every mistake here is otherwise silent at startup
+     * and confusing later. A group that shadows a backend name would make {@code /server}
+     * ambiguous; a group naming a backend that does not exist would send players nowhere
+     * the first time that member came up in the rotation.
+     */
+    private static Map<String, List<String>> parseGroups(Config config, Map<String, ServerEntry> servers) {
+        Config section = config.get("groups");
+        Map<String, List<String>> groups = new LinkedHashMap<>();
+        if (section == null) {
+            return deriveGroups(servers, groups);
+        }
+        for (Config.Entry entry : section.entrySet()) {
+            String name = entry.getKey().toLowerCase(Locale.ROOT);
+            if (servers.containsKey(name)) {
+                throw new IllegalArgumentException("Group '" + name + "' has the same name as a backend; "
+                        + "one name cannot mean both");
+            }
+            Object value = entry.getValue();
+            List<String> members = value instanceof String single ? List.of(single) : entry.getValue();
+            if (members.isEmpty()) {
+                throw new IllegalArgumentException("Group '" + name + "' lists no backends");
+            }
+            for (String member : members) {
+                if (!servers.containsKey(member)) {
+                    throw new IllegalArgumentException(
+                            "Group '" + name + "' names unknown backend '" + member + "'");
+                }
+            }
+            groups.put(name, List.copyOf(members));
+        }
+        return deriveGroups(servers, groups);
+    }
+
+    /**
+     * Groups backends whose names already say they belong together.
+     *
+     * <p>{@code survival-01} and {@code survival-02} are a group called {@code survival}
+     * without anyone writing that down. Numbering servers is what people do anyway, so
+     * the config for the common case becomes no config at all &mdash; and the alternative,
+     * repeating every backend name a second time under {@code [groups]}, is a list that
+     * can silently fall out of date the next time a server is added.
+     *
+     * <p>Deliberately narrow. Only a separator followed by digits counts, so
+     * {@code pvp-arena} and {@code lobby} are left alone; a name has to look like one of
+     * several numbered copies, not merely contain a dash.
+     *
+     * <p>Anything written under {@code [groups]} wins, and a real backend's name always
+     * wins over a derived group, so nothing here can override something stated outright.
+     */
+    private static Map<String, List<String>> deriveGroups(Map<String, ServerEntry> servers,
+                                                          Map<String, List<String>> explicit) {
+        Map<String, List<String>> derived = new LinkedHashMap<>();
+        for (String server : servers.keySet()) {
+            Matcher matcher = NUMBERED_SERVER.matcher(server);
+            if (!matcher.matches()) {
+                continue;
+            }
+            String base = matcher.group(1);
+            // A backend of that name already means something, and a group cannot shadow
+            // it. Someone running "survival" beside "survival-01" gets the backend.
+            if (servers.containsKey(base) || explicit.containsKey(base)) {
+                continue;
+            }
+            derived.computeIfAbsent(base, key -> new ArrayList<>()).add(server);
+        }
+
+        Map<String, List<String>> all = new LinkedHashMap<>(explicit);
+        derived.forEach((name, members) -> all.put(name, List.copyOf(members)));
+        return all;
+    }
+
+    /**
+     * Reads {@code [companions]}: the processes Relay starts beside itself.
+     *
+     * <p>The command is a list rather than a string. Splitting a command line correctly is
+     * a job nobody gets right on the first attempt -- quoting, escapes, and on Windows
+     * paths with spaces in them as the normal case -- and getting it wrong produces a
+     * process that fails to start for reasons the operator cannot see in their own config.
+     */
+    private static List<CompanionEntry> parseCompanions(Config config) {
+        Config section = config.get("companions");
+        List<CompanionEntry> companions = new ArrayList<>();
+        if (section == null) {
+            return companions;
+        }
+        for (Config.Entry entry : section.entrySet()) {
+            String name = entry.getKey();
+            Object value = entry.getValue();
+            if (!(value instanceof Config companion)) {
+                throw new IllegalArgumentException("Companion '" + name
+                        + "' must be a table, for example [companions." + name + "]");
+            }
+            Object command = companion.get("command");
+            List<String> arguments;
+            if (command instanceof List<?> list) {
+                // Objects.toString, never String::valueOf. Against a wildcard element
+                // type the compiler resolves that method reference to valueOf(char[]),
+                // and every string argument then fails to cast at runtime -- which
+                // presents as a config error naming no key at all.
+                arguments = list.stream().map(Objects::toString).toList();
+            } else if (command instanceof String single && !single.isBlank()) {
+                arguments = List.of(single);
+            } else {
+                throw new IllegalArgumentException("Companion '" + name
+                        + "' needs a command, as a list of arguments");
+            }
+
+            Map<String, String> environment = new LinkedHashMap<>();
+            Object env = companion.get("environment");
+            if (env instanceof Config table) {
+                for (Config.Entry variable : table.entrySet()) {
+                    environment.put(variable.getKey(), Objects.toString(variable.getValue()));
+                }
+            }
+
+            companions.add(new CompanionEntry(name, arguments,
+                    companion.getOrElse("enabled", Boolean.TRUE),
+                    companion.getOrElse("restart", Boolean.TRUE),
+                    environment));
+        }
+        return companions;
+    }
+
+    /** Accepts either a backend or a group, since anywhere a player can be sent takes both. */
+    private static void requireDestination(Map<String, ServerEntry> servers, Map<String, List<String>> groups,
+                                           String name, String where) {
+        if (!servers.containsKey(name) && !groups.containsKey(name.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException(where + " names unknown backend or group '" + name + "'");
+        }
+    }
+
+    private static Map<String, List<String>> parseForcedHosts(Config config, Map<String, ServerEntry> servers,
+                                                              Map<String, List<String>> groups) {
         Config section = config.get("forced-hosts");
         Map<String, List<String>> hosts = new LinkedHashMap<>();
         if (section == null) {
@@ -186,10 +396,7 @@ public final class ConfigLoader {
             Object value = entry.getValue();
             List<String> targets = value instanceof String single ? List.of(single) : entry.getValue();
             for (String target : targets) {
-                if (!servers.containsKey(target)) {
-                    throw new IllegalArgumentException(
-                            "forced-hosts entry '" + entry.getKey() + "' names unknown backend '" + target + "'");
-                }
+                requireDestination(servers, groups, target, "forced-hosts entry '" + entry.getKey() + "'");
             }
             hosts.put(entry.getKey().toLowerCase(Locale.ROOT), List.copyOf(targets));
         }

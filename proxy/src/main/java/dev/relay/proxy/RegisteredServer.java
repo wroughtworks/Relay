@@ -1,6 +1,8 @@
 package dev.relay.proxy;
 
 import dev.relay.config.RelayConfig.ServerEntry;
+import dev.relay.health.BackendHealth;
+import dev.relay.health.BackendStats;
 
 import java.net.InetSocketAddress;
 import java.util.Collection;
@@ -14,6 +16,18 @@ public final class RegisteredServer {
     private final String name;
     private final InetSocketAddress address;
     private final Set<ConnectedPlayer> players = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Replaced wholesale by the health checker, never mutated in place, so a reader
+     * always sees one consistent verdict rather than fields from two different checks.
+     */
+    private volatile BackendHealth health = BackendHealth.unknown();
+
+    /**
+     * Null until the backend reports. It can only do so while a player is on it, since a
+     * plugin message needs a connection to travel on.
+     */
+    private volatile BackendStats stats;
 
     public RegisteredServer(ServerEntry entry) {
         this.name = entry.name();
@@ -34,6 +48,28 @@ public final class RegisteredServer {
 
     public int playerCount() {
         return players.size();
+    }
+
+    public BackendHealth health() {
+        return health;
+    }
+
+    /** @return the backend's last self-report, or {@code null} if it has never sent one */
+    public BackendStats stats() {
+        return stats;
+    }
+
+    public void setStats(BackendStats stats) {
+        this.stats = stats;
+    }
+
+    public void setHealth(BackendHealth health) {
+        this.health = health;
+    }
+
+    /** Whether new players should be sent here, per spec 6.4. */
+    public boolean acceptsNewPlayers() {
+        return health.acceptsNewPlayers();
     }
 
     void addPlayer(ConnectedPlayer player) {

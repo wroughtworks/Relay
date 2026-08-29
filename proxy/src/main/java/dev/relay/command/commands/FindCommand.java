@@ -3,9 +3,11 @@ package dev.relay.command.commands;
 import dev.relay.command.Command;
 import dev.relay.command.CommandSource;
 import dev.relay.proxy.ConnectedPlayer;
+import dev.relay.proxy.NetworkRoute;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.List;
@@ -63,5 +65,35 @@ public final class FindCommand implements Command {
         source.sendMessage(Component.text(player.username(), NamedTextColor.WHITE)
                 .append(Component.text(" is on ", NamedTextColor.GRAY))
                 .append(Component.text(server.target().name(), NamedTextColor.GOLD)));
+
+        // The route, because "is on survival-02" does not answer the question that
+        // usually follows it. With forced hosts and groups, the path is the reason they
+        // are there, and it is otherwise not visible from anywhere in game.
+        NetworkRoute route = NetworkRoute.of(player, proxy);
+        TextComponent.Builder path = Component.text();
+        for (int i = 0; i < route.hops().size(); i++) {
+            if (i > 0) {
+                path.append(Component.text(" -> ", NamedTextColor.DARK_GRAY));
+            }
+            path.append(Component.text(route.hops().get(i).name(), colourOf(route.hops().get(i).kind())));
+        }
+        source.sendMessage(Component.text("  route ", NamedTextColor.GRAY).append(path.build()));
+
+        if (route.virtualHost() != null) {
+            source.sendMessage(Component.text("  via   ", NamedTextColor.GRAY)
+                    .append(Component.text(route.virtualHost(), NamedTextColor.WHITE)));
+        }
+        source.sendMessage(Component.text("  id    ", NamedTextColor.GRAY)
+                .append(Component.text(route.routeId(), NamedTextColor.DARK_GRAY)));
+    }
+
+    /** Distinct colours per hop kind, so a route reads without labels on each hop. */
+    private static NamedTextColor colourOf(NetworkRoute.Kind kind) {
+        return switch (kind) {
+            case EDGE -> NamedTextColor.GRAY;
+            case PROXY -> NamedTextColor.AQUA;
+            case POOL -> NamedTextColor.GREEN;
+            case BACKEND -> NamedTextColor.GOLD;
+        };
     }
 }

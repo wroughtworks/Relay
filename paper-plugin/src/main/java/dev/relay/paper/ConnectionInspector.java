@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import io.netty.channel.Channel;
 import org.bukkit.entity.Player;
@@ -32,11 +32,11 @@ final class ConnectionInspector {
 
     private static final String HANDLER_NAME = "relay-debug";
 
-    private final RelayDebugPlugin plugin;
+    private final RelayPlugin plugin;
     private final boolean logPackets;
     private final Map<UUID, Channel> attached = new ConcurrentHashMap<>();
 
-    ConnectionInspector(RelayDebugPlugin plugin, boolean logPackets) {
+    ConnectionInspector(RelayPlugin plugin, boolean logPackets) {
         this.plugin = plugin;
         this.logPackets = logPackets;
     }

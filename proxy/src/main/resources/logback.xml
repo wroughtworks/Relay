@@ -1,7 +1,20 @@
 <configuration>
+
+  <!-- `class`, not `converterClass`: the latter is deprecated, and logback answers a
+       deprecation by dumping its entire startup status to stdout. That noise buried the
+       output of every tool run from this jar. -->
+  <!-- Companion output is tinted per process, so a supervised program's lines are
+       distinguishable from Relay's own at a glance. The colour is derived from the
+       companion's name, so it is stable across restarts. Console only: the file
+       appender below uses neither converter and stays free of escape codes. -->
+  <conversionRule conversionWord="companionColour"
+                  class="dev.relay.companion.CompanionColour$Start"/>
+  <conversionRule conversionWord="companionReset"
+                  class="dev.relay.companion.CompanionColour$End"/>
+
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{HH:mm:ss} %highlight(%-5level) %cyan(%logger{20}) - %msg%n</pattern>
+      <pattern>%d{HH:mm:ss} %highlight(%-5level) %cyan(%logger{20}) - %companionColour%msg%companionReset%n</pattern>
     </encoder>
   </appender>
 
@@ -20,6 +33,12 @@
     </encoder>
   </appender>
 
+  <!-- Keeps the last few hundred lines in memory for the dashboard's console (spec
+       9.1). No file, no socket, no encoder: it hands the fields to a ring buffer and
+       the page decides how to show them, which is what makes filtering by level and
+       searching by logger possible on the far end. -->
+  <appender name="TAIL" class="dev.relay.log.TailAppender"/>
+
   <logger name="io.netty" level="INFO"/>
 
   <!-- Raise Relay's own logging without touching this file:
@@ -31,5 +50,6 @@
   <root level="INFO">
     <appender-ref ref="CONSOLE"/>
     <appender-ref ref="FILE"/>
+    <appender-ref ref="TAIL"/>
   </root>
 </configuration>

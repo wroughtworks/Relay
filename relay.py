@@ -36,8 +36,10 @@ PROJECT = Path(__file__).resolve().parent
 JAR_GLOB = "proxy-*.jar"
 JAR_DIR = PROJECT / "proxy" / "build" / "libs"
 PLUGIN_JAR_DIR = PROJECT / "paper-plugin" / "build" / "libs"
-PLUGIN_JAR_GLOB = "RelayDebug-*.jar"
+PLUGIN_JAR_GLOB = "Relay-*.jar"
 CONFIG = PROJECT / "relay.toml"
+# The dashboard companion's jar, for the account tool it carries.
+DASHBOARD_JAR = PROJECT / "dashboard" / "build" / "libs" / "relay-dashboard-0.1.0-SNAPSHOT.jar"
 DEV_CONFIG = PROJECT / "relay-dev.json"
 SOURCE_DIRS = [
     PROJECT / "proxy" / "src",
@@ -279,6 +281,8 @@ def fingerprint(secret: str) -> str:
 class Process:
     pid: int
     command: str
+    #: Unix timestamp the process started, or None where it could not be read.
+    started: float | None = None
 
 
 def running_processes() -> list[Process]:
@@ -287,7 +291,7 @@ def running_processes() -> list[Process]:
             [
                 "powershell", "-NoProfile", "-NonInteractive", "-Command",
                 "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
-                "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+                "Select-Object ProcessId,CommandLine,CreationDate | ConvertTo-Json -Compress",
             ],
             capture_output=True, text=True,
         )
@@ -300,7 +304,8 @@ def running_processes() -> list[Process]:
         if isinstance(data, dict):
             data = [data]
         return [
-            Process(int(item["ProcessId"]), item.get("CommandLine") or "")
+            Process(int(item["ProcessId"]), item.get("CommandLine") or "",
+                    _parse_cim_date(item.get("CreationDate")))
             for item in data if item.get("ProcessId")
         ]
 
@@ -313,17 +318,46 @@ def running_processes() -> list[Process]:
     return processes
 
 
+def _parse_cim_date(value) -> float | None:
+    """
+    Turns a WMI CreationDate into a timestamp.
+
+    PowerShell renders it either as a WMI string (``20260818010348.123456+000``) or,
+    once it has been through ConvertTo-Json, as ``/Date(1755478000000)/``.
+    """
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith("/Date("):
+        digits = text[6:].split(")")[0].split("+")[0].split("-")[0]
+        return int(digits) / 1000 if digits.lstrip("-").isdigit() else None
+    try:
+        return time.mktime(time.strptime(text[:14], "%Y%m%d%H%M%S"))
+    except ValueError:
+        return None
+
+
+# Companions are Relay processes too, and live under the same directory, so a
+# path match finds them. They must not be treated as proxies: killing one
+# directly skips the goodbye the proxy sends over the control channel, and the
+# supervisor would simply start it again a second later.
+COMPANION_MARKERS = ("relay-dashboard", "relay-discord")
+
+
 def relay_processes() -> list[Process]:
     """
-    Java processes running the Relay jar.
+    Java processes running the Relay proxy jar.
 
-    Matched narrowly on purpose: the Gradle daemon and the Paper server are also
-    java processes, and killing either would be a bad surprise.
+    Matched narrowly on purpose: the Gradle daemon, the Paper servers and the
+    proxy's own companions are all java processes under this directory, and
+    stopping any of them here would be a bad surprise.
     """
     found = []
     for process in running_processes():
         command = process.command.lower()
         if "gradle" in command or "server.jar" in command:
+            continue
+        if any(marker in command for marker in COMPANION_MARKERS):
             continue
         # Matched on the path rather than the jar name: the artifact has been called
         # both relay-*.jar and proxy-*.jar, and a name-only match silently stopped
@@ -528,19 +562,33 @@ def pid_file(name: str) -> Path:
 
 
 def backend_pid(name: str) -> int | None:
-    """The recorded pid, if that process is still alive and still java."""
-    path = pid_file(name)
-    if not path.exists():
-        return None
-    try:
-        pid = int(path.read_text().strip())
-    except ValueError:
-        return None
+    """
+    The running process for this backend, if there is one.
+
+    Located by the marker stamped onto its command line rather than by a pid
+    file, because a terminal that opens tabs spawns the real java process as a
+    grandchild and the pid recorded at launch belongs to the launcher.
+    """
+    marker = f"{BACKEND_MARKER}{name}"
     for process in running_processes():
-        if process.pid == pid:
-            return pid
-    # Stale: the server exited without the file being cleaned up.
-    path.unlink(missing_ok=True)
+        # Exact match: a backend called "lobby" must not match "lobby2".
+        if marker in process.command:
+            tail = process.command.split(marker, 1)[1]
+            if not tail or tail[0] in " 	\"'":
+                return process.pid
+
+    path = pid_file(name)
+    if path.exists():
+        try:
+            pid = int(path.read_text().strip())
+        except ValueError:
+            pid = None
+        if pid is not None:
+            for process in running_processes():
+                if process.pid == pid:
+                    return pid
+        # Stale: the server exited without the file being cleaned up.
+        path.unlink(missing_ok=True)
     return None
 
 
@@ -557,10 +605,17 @@ def find_server_jar(directory: Path) -> Path | None:
 
 #: How a backend's console is presented.
 #:   foreground - takes over this terminal; only one server at a time
-#:   console    - its own window, so several servers can be watched at once and
-#:                each still accepts typed commands such as `stop`
+#:   tabs       - one Windows Terminal window, a tab per backend; navigate with
+#:                Ctrl+Tab, and each tab is a real console that accepts `stop`
+#:   console    - a separate window per backend
 #:   background - detached, output to a file, nothing to type into
-FOREGROUND, CONSOLE, BACKGROUND = "foreground", "console", "background"
+FOREGROUND, TABS, CONSOLE, BACKGROUND = "foreground", "tabs", "console", "background"
+
+#: Stamped onto every backend the script launches, so its process can be found
+#: again regardless of how it was started. A window title or a pid file does not
+#: survive being launched through a terminal that spawns the real process as a
+#: grandchild, but a system property is right there in the command line.
+BACKEND_MARKER = "-Drelay.backend="
 
 
 def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
@@ -589,7 +644,7 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
 
     java = entry.get("java", "java")
     memory = entry.get("memory", "2G")
-    command = [java, f"-Xmx{memory}"]
+    command = [java, f"-Xmx{memory}", f"{BACKEND_MARKER}{name}"]
     if debug:
         config = directory / "log4j2-debug.xml"
         if not config.exists():
@@ -607,6 +662,17 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
         # Takes over this terminal, giving the Paper console directly: typing
         # `stop` there shuts the server down properly and saves the world.
         return subprocess.run(command, cwd=directory).returncode
+
+    if mode == TABS:
+        if windows_terminal() is None:
+            print(Style.yellow("  Windows Terminal not found; opening a separate window instead"))
+            return start_backend(name, entry, debug, CONSOLE)
+        # One tab in the shared window. wt returns as soon as the tab is created,
+        # so the java process is a grandchild and is found by its marker rather
+        # than by the pid wt would report.
+        subprocess.Popen(open_tab_command(name, directory, command))
+        print(Style.green(f"'{name}' opened as a tab"))
+        return 0
 
     if mode == CONSOLE:
         if not IS_WINDOWS:
@@ -639,6 +705,29 @@ def start_backend(name: str, entry: dict, debug: bool, mode: str) -> int:
     print(Style.dim(f"  log: {log}"))
     print(Style.dim("  detached, so there is nothing to type into; --console gives a window"))
     return 0
+
+
+def windows_terminal() -> str | None:
+    """Windows Terminal, which is what provides tabs. Ships with Windows 11."""
+    if not IS_WINDOWS:
+        return None
+    found = shutil.which("wt.exe") or shutil.which("wt")
+    if found:
+        return found
+    bundled = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "wt.exe"
+    return str(bundled) if bundled.exists() else None
+
+
+#: The shared window's name. `wt --window <name>` opens it if it does not exist
+#: and reuses it if it does, so every backend lands in the same window without
+#: this script having to track which tab was first.
+TAB_WINDOW = "relay"
+
+
+def open_tab_command(title: str, directory: Path, command: list[str]) -> list[str]:
+    """A `wt` invocation placing one server in a tab of the shared window."""
+    return [windows_terminal(), "--window", TAB_WINDOW,
+            "new-tab", "--title", title, "-d", str(directory)] + command
 
 
 def find_terminal_emulator() -> list[str] | None:
@@ -768,6 +857,14 @@ def stop_backend(name: str, force: bool = False, timeout: float = 60.0) -> int:
 
 
 def write_paper_debug_config(target: Path) -> None:
+    """
+    Writes a log4j2 config that turns on Paper's packet-level logging.
+
+    Keeps a file appender alongside the console one. A console-only config looks
+    fine while you are watching the window, but the output vanishes with the tab
+    and cannot be read back afterwards --- which is useless for the very case
+    this exists to diagnose.
+    """
     target.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
 <Configuration status="WARN">
@@ -775,12 +872,24 @@ def write_paper_debug_config(target: Path) -> None:
     <Console name="Console" target="SYSTEM_OUT">
       <PatternLayout pattern="[%d{HH:mm:ss} %level]: %msg%n%throwable"/>
     </Console>
+    <!-- Kept so the trace survives the window being closed. -->
+    <RollingRandomAccessFile name="File" fileName="logs/latest.log"
+                             filePattern="logs/%d{yyyy-MM-dd}-%i.log.gz">
+      <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level]: %msg%n%throwable"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy/>
+        <OnStartupTriggeringPolicy/>
+      </Policies>
+    </RollingRandomAccessFile>
   </Appenders>
   <Loggers>
     <!-- Packet-level tracing, plus the pipeline exceptions Paper otherwise swallows. -->
     <Logger name="net.minecraft.network" level="DEBUG"/>
     <Logger name="io.netty" level="DEBUG"/>
-    <Root level="INFO"><AppenderRef ref="Console"/></Root>
+    <Root level="INFO">
+      <AppenderRef ref="Console"/>
+      <AppenderRef ref="File"/>
+    </Root>
   </Loggers>
 </Configuration>
 """,
@@ -806,6 +915,133 @@ def wait_for_port(host: str, port: int, timeout: float) -> bool:
 
 
 # --------------------------------------------------------------------------- commands
+
+
+def stamp(path: Path) -> str:
+    """A file's mtime, in the format the rest of this script prints."""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+
+
+def installed_plugin(name: str) -> Path | None:
+    """The Relay plugin jar currently sitting in a backend's plugins folder."""
+    entry = backends().get(name)
+    if not entry:
+        return None
+    plugins = Path(entry["path"]) / "plugins"
+    if not plugins.is_dir():
+        return None
+    jars = sorted(plugins.glob("Relay-*.jar"), key=lambda q: q.stat().st_mtime, reverse=True)
+    return jars[0] if jars else None
+
+
+def check_live_stack(report: "Report") -> None:
+    """
+    Checks the stack that is running, rather than the config that describes it.
+
+    Everything else in doctor reads files. This reads reality, because the most
+    expensive failures this project has had were never wrong config -- they were
+    something stale that nothing reported: a proxy running a jar built before the
+    fix, a backend loading last week's plugin. Both present as "the feature does
+    not work" with no error anywhere.
+    """
+    heading("Running stack")
+
+    processes = relay_processes()
+    if not processes:
+        report.info("Relay is not running", "nothing else here can be checked")
+        return
+    report.ok(f"Relay is running (PID {processes[0].pid})")
+
+    jar = jar_path()
+    if jar is not None:
+        for process in processes:
+            # Process start time against jar mtime: a proxy started before its own
+            # jar was rebuilt is running code nobody can see, and fails later with a
+            # NoClassDefFoundError naming something deep in Netty.
+            if process.started and process.started < jar.stat().st_mtime:
+                report.warn("the running proxy predates its jar",
+                            f"{jar.name} was built after this process started",
+                            "py relay.py restart")
+                break
+        else:
+            report.ok("the running proxy matches the built jar")
+
+    port = 25565
+    try:
+        bind = str(load_toml(CONFIG).get("bind", ""))
+        if ":" in bind:
+            port = int(bind.rpartition(":")[2])
+    except Exception:
+        pass
+    if port_open("127.0.0.1", port, timeout=3):
+        report.ok(f"the listener answers on port {port}")
+    else:
+        report.fail(f"nothing is listening on {port}",
+                    "the proxy is running but its port is closed")
+
+    # The control channel and the dashboard, which only exist if configured.
+    try:
+        config = load_toml(CONFIG)
+    except Exception:
+        config = {}
+    control = config.get("control", {}) or {}
+    if control.get("enabled", True):
+        bind = str(control.get("bind", "127.0.0.1:25580"))
+        host, _, control_port = bind.rpartition(":")
+        if port_open(host or "127.0.0.1", int(control_port), timeout=3):
+            report.ok(f"the control channel is open on {bind}")
+        else:
+            report.fail(f"the control channel is not listening on {bind}",
+                        "companions cannot reach the proxy without it")
+
+    servers = dashboard_servers()
+    if servers is None:
+        if config.get("companions"):
+            report.warn("the dashboard is not answering",
+                        "it is configured as a companion but its API did not respond",
+                        "check the [dashboard] lines in the proxy log")
+    else:
+        report.ok(f"the dashboard is answering, and reports {len(servers)} backend(s)")
+        for server in servers:
+            state = server.get("status", "UNKNOWN")
+            label = f"backend '{server.get('name')}' is {state.lower()}"
+            if state in ("HEALTHY", "DEGRADED"):
+                report.ok(label, f"{server.get('latencyMillis')}ms, "
+                                 f"{server.get('players')} player(s)")
+            elif state == "DRAINING":
+                report.warn(label, f"{server.get('players')} player(s) still on it")
+            else:
+                report.fail(label, server.get("detail") or "not answering status pings")
+
+
+def check_plugin_freshness(report: "Report", names: list[str]) -> None:
+    """
+    Compares each backend's installed plugin against the one just built.
+
+    The plugin is not a diagnostic any more: it reports TPS and memory, registers
+    the proxy's commands, and carries the backend API. A backend running an old
+    copy therefore has features that silently differ from the proxy's, which is
+    indistinguishable from those features being broken.
+    """
+    built = plugin_jar_path()
+    if built is None:
+        return
+
+    heading("Backend plugins")
+    for name in names:
+        installed = installed_plugin(name)
+        if installed is None:
+            report.warn(f"'{name}' has no Relay plugin",
+                        "TPS and memory will not be reported, and the proxy's commands "
+                        "will not be registered on it",
+                        f"py relay.py plugin {name}")
+            continue
+        if installed.stat().st_mtime < built.stat().st_mtime - 1:
+            report.warn(f"'{name}' has an older Relay plugin",
+                        f"installed {stamp(installed)}, built {stamp(built)}",
+                        f"py relay.py shutdown {name} && py relay.py plugin {name}")
+        else:
+            report.ok(f"'{name}' has the current Relay plugin")
 
 
 def cmd_doctor(args) -> int:
@@ -967,6 +1203,12 @@ def cmd_doctor(args) -> int:
     for process in relay_processes():
         report.info(f"Relay is running as PID {process.pid}")
 
+    if getattr(args, "live", False):
+        print()
+        check_plugin_freshness(report, sorted(backends()))
+        print()
+        check_live_stack(report)
+
     print()
     return report.render()
 
@@ -1015,12 +1257,17 @@ def cmd_start(args) -> int:
     if not names:
         return 1
 
-    mode = BACKGROUND if args.background else CONSOLE if args.console else FOREGROUND
+    mode = (BACKGROUND if args.background
+            else CONSOLE if args.console
+            else TABS if args.tabs
+            else FOREGROUND)
     if len(names) > 1 and mode == FOREGROUND:
         # This terminal can only host one server, so several have to go somewhere
-        # else rather than the command silently starting just the first.
-        print(Style.yellow("Starting several servers, so each gets its own console window."))
-        mode = CONSOLE
+        # else rather than the command silently starting just the first. Tabs keep
+        # them together where that is possible.
+        mode = TABS if windows_terminal() else CONSOLE
+        print(Style.yellow("Starting several servers, so they go into "
+                           + ("tabs of one window." if mode == TABS else "separate windows.")))
 
     entries = backends()
     code = 0
@@ -1040,6 +1287,124 @@ def cmd_shutdown(args) -> int:
     return code
 
 
+def proxy_command(quiet: bool) -> list[str] | None:
+    """The java invocation for the proxy, or None if there is no jar yet."""
+    jar = jar_path()
+    if jar is None:
+        return None
+    command = ["java"]
+    if not quiet:
+        command.append("-Drelay.log.level=DEBUG")
+    return command + ["-jar", str(jar)]
+
+
+def start_proxy_tab(quiet: bool) -> bool:
+    """
+    Opens the proxy in a tab of the shared window.
+
+    Its console comes with it, so `stop` can be typed there for a clean shutdown
+    -- and this terminal is left free to be the control console instead.
+    """
+    command = proxy_command(quiet)
+    if command is None:
+        print(Style.red("No jar found. Run `build` first."))
+        return False
+    if windows_terminal() is None:
+        return False
+    subprocess.Popen(open_tab_command("relay-proxy", PROJECT, command))
+    print(Style.green("Relay opened as a tab"))
+    return True
+
+
+#: Commands the console handles itself rather than passing to the parser.
+SHELL_BUILTINS = {"help", "?", "exit", "quit", "cls", "clear"}
+
+
+def cmd_shell(args) -> int:
+    """
+    A control console for the running stack.
+
+    Typed lines are dispatched through the same parser the command line uses, so
+    there is exactly one definition of every command and the two cannot drift.
+    """
+    print()
+    print(Style.bold("Relay console") + Style.dim("   'help' for commands, 'exit' to leave"))
+    print(Style.dim("Servers keep running when you leave; 'down' stops them."))
+
+    parser = build_parser()
+    while True:
+        try:
+            line = input(Style.cyan("relay> ")).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+
+        word = line.split()[0].lower()
+        if word in ("exit", "quit"):
+            return 0
+        if word in ("cls", "clear"):
+            os.system("cls" if IS_WINDOWS else "clear")
+            continue
+        if word in ("help", "?"):
+            print_shell_help()
+            continue
+
+        try:
+            import shlex
+            parsed = parser.parse_args(shlex.split(line))
+        except SystemExit:
+            # argparse prints its own message and would otherwise end the console.
+            continue
+        except ValueError as error:
+            print(Style.red(f"Could not parse that: {error}"))
+            continue
+
+        if not getattr(parsed, "command", None):
+            print(Style.yellow("Unknown command. Try 'help'."))
+            continue
+        # `up` from inside the console would otherwise open a second console.
+        parsed.no_shell = True
+        try:
+            parsed.func(parsed)
+        except KeyboardInterrupt:
+            print(Style.yellow("  interrupted"))
+        except Exception as error:  # noqa: BLE001 - a console should survive anything
+            print(Style.red(f"  {type(error).__name__}: {error}"))
+
+
+def print_shell_help() -> None:
+    rows = [
+        ("status", "what is running, and which backends are up"),
+        ("doctor", "cross-check every config for silent mismatches"),
+        ("ping", "prove the proxy answers a server-list ping"),
+        ("logs -n 40", "recent proxy log, or 'logs -f' to follow"),
+        ("", ""),
+        ("start <name>", "start a backend in a tab"),
+        ("shutdown <name>", "stop a backend, saving the world"),
+        ("run", "restart the proxy in this terminal"),
+        ("stop", "stop the proxy"),
+        ("down", "stop the proxy and every backend"),
+        ("", ""),
+        ("build", "rebuild the jar and plugin"),
+        ("test", "run the test suite"),
+        ("plugin <name>", "install the Paper-side plugin"),
+        ("link <name> <path>", "register a backend"),
+        ("", ""),
+        ("exit", "leave the console; servers keep running"),
+    ]
+    print()
+    for command, description in rows:
+        if not command:
+            print()
+        else:
+            print(f"  {Style.cyan(command.ljust(20))} {description}")
+    print()
+    print(Style.dim("  Any relay.py command works here, with the same flags."))
+    print()
+
+
 def cmd_up(args) -> int:
     """Starts every backend in the background, waits for them, then runs the proxy."""
     entries = backends()
@@ -1048,9 +1413,13 @@ def cmd_up(args) -> int:
         print("  py relay.py link lobby <path-to-paper-server>")
         return 1
 
-    # Each backend gets its own window so its output can be watched and commands
-    # typed into it, while this terminal is left free for the proxy.
-    mode = BACKGROUND if args.background else CONSOLE
+    # Backends go into tabs of a single window so their output can be watched and
+    # commands typed into them without covering the screen, leaving this terminal
+    # free for the proxy.
+    mode = (BACKGROUND if args.background
+            else CONSOLE if args.windows
+            else TABS if windows_terminal()
+            else CONSOLE)
     heading("Starting backends")
     for name, entry in entries.items():
         start_backend(name, entry, args.debug, mode)
@@ -1071,6 +1440,21 @@ def cmd_up(args) -> int:
             print(Style.dim(f"  check {RUN_DIR / (name + '.log')}"))
 
     heading("Starting Relay")
+    if relay_processes():
+        print(Style.yellow("Relay is already running; stopping the old instance."))
+        cmd_stop(args)
+    if args.build or jar_is_stale():
+        if run_gradle([":proxy:build"]) != 0:
+            return 1
+
+    # The proxy gets a tab like everything else, which leaves this terminal free
+    # to be the control console rather than being consumed by the proxy's own.
+    if mode == TABS and start_proxy_tab(args.quiet):
+        if getattr(args, "no_shell", False):
+            return 0
+        return cmd_shell(args)
+
+    # No tabs available, so the proxy takes this terminal as before.
     return cmd_run(args)
 
 
@@ -1096,22 +1480,40 @@ def cmd_plugin(args) -> int:
         return 1
 
     entries = backends()
+    code = 0
     for name in names:
+        # Windows will not let a loaded jar be replaced or deleted, so a running
+        # server turns this into a confusing permission error partway through.
+        if backend_pid(name):
+            print(Style.yellow(f"'{name}' is running; its plugin jar cannot be replaced."))
+            print(Style.dim(f"  stop it first:  py relay.py shutdown {name}"))
+            code = 1
+            continue
+
         plugins = Path(entries[name]["path"]) / "plugins"
         plugins.mkdir(exist_ok=True)
         # Clear older copies, or the server loads two versions and refuses one.
-        for stale in plugins.glob("RelayDebug-*.jar"):
-            if stale.name != jar.name:
-                stale.unlink()
+        # RelayDebug is the name this plugin shipped under before it grew past being
+        # a diagnostic; leaving one behind would load the plugin twice.
+        for pattern in ("Relay-*.jar", "RelayDebug-*.jar"):
+            for stale in plugins.glob(pattern):
+                if stale.name == jar.name:
+                    continue
+                try:
+                    stale.unlink()
+                    print(Style.dim(f"  removed stale {stale.name}"))
+                except OSError as error:
+                    print(Style.yellow(f"  could not remove {stale.name}: {error}"))
+                    print(Style.dim("  two copies would load the plugin twice; remove it by hand"))
+                    code = 1
         shutil.copy2(jar, plugins / jar.name)
         print(Style.green(f"Installed {jar.name} into {plugins}"))
 
-    print()
-    print("Restart the backend(s), then reproduce the problem. The plugin reports:")
-    print("  - whether the SERVER or the CLIENT closed the connection")
-    print("  - a stack trace naming the code that closed it")
-    print("  - kick reasons, and writes that failed")
-    return 0
+    if code == 0:
+        print()
+        print("Restart the backend(s) to load it. On join the plugin probes the")
+        print("backend API and prints what came back; /relay drives it by hand.")
+    return code
 
 
 def cmd_unlink(args) -> int:
@@ -1126,6 +1528,14 @@ def cmd_unlink(args) -> int:
     return 0
 
 
+def companion_processes() -> list[Process]:
+    """Companion processes the proxy started, matched by their jar names."""
+    return [
+        process for process in running_processes()
+        if any(marker in process.command.lower() for marker in COMPANION_MARKERS)
+    ]
+
+
 def cmd_stop(args) -> int:
     processes = relay_processes()
     if not processes:
@@ -1137,9 +1547,101 @@ def cmd_stop(args) -> int:
         if not kill(process.pid):
             print(Style.red(f"  could not terminate {process.pid}"))
             return 1
+
+    # Companions are stopped here too. On Windows kill() is taskkill /F, which skips
+    # the proxy's shutdown hook entirely -- so the goodbye that would normally tell
+    # companions to exit never goes out, and they are left holding their ports. The
+    # next dashboard then fails to bind, which looks like a broken dashboard rather
+    # than an orphan from the run before.
     time.sleep(0.6)
+    orphans = companion_processes()
+    for process in orphans:
+        print(f"Stopping companion PID {process.pid}")
+        kill(process.pid)
+
     print(Style.green("Stopped."))
     return 0
+
+
+def proxy_answers(timeout: float = 1.5) -> bool:
+    """
+    Whether a real server-list ping gets a reply.
+
+    status_ping raises rather than returning on failure, which is right for the
+    `ping` command -- an operator wants the reason -- and wrong for a poll, where
+    the only question is whether to wait longer.
+    """
+    port = 25565
+    try:
+        bind = str(load_toml(CONFIG).get("bind", ""))
+        if ":" in bind:
+            port = int(bind.rpartition(":")[2])
+    except Exception:
+        pass
+    try:
+        return status_ping("127.0.0.1", port, timeout=timeout) is not None
+    except Exception:
+        return False
+
+
+def wait_until_healthy(timeout: float = 60) -> bool:
+    """
+    Blocks until the proxy actually answers, not merely until it was started.
+
+    Started and ready are different states, and the gap between them is where
+    every sleep-then-check dance comes from. A real ping is the honest test: it
+    proves the listener is bound and the protocol layer is answering, which "the
+    process exists" does not.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proxy_answers():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def cmd_restart(args) -> int:
+    """
+    Stop, rebuild, start, and wait until it answers.
+
+    Three commands and a guess collapsed into one. The rebuild happens while
+    nothing is running, which makes replacing the jar under a live proxy -- the
+    cause of NoClassDefFoundErrors that read like proxy bugs -- unreachable
+    rather than merely warned about.
+    """
+    if relay_processes():
+        cmd_stop(args)
+
+    if not args.no_build:
+        heading("Building")
+        if run_gradle([":proxy:build", ":dashboard:build"]) != 0:
+            return 1
+
+    heading("Starting")
+    # cmd_up's own namespace, from cmd_up's own parser. Restart does not know which
+    # options up reads, and should not have to: a hand-built namespace goes stale the
+    # moment up grows an option, and fails only when that option is next touched.
+    # Never the console by default. restart exists to rebuild and prove the stack is
+    # answering, and a blocking prompt in the middle of that hides the answer.
+    up = build_parser().parse_args(["up"] if getattr(args, "shell", False) else ["up", "--no-shell"])
+    up.timeout = args.timeout
+    code = cmd_up(up)
+    if code != 0:
+        return code
+
+    print()
+    if wait_until_healthy():
+        print(Style.green("Relay is answering."))
+        servers = dashboard_servers()
+        if servers is not None:
+            up = sum(1 for x in servers if x.get("status") in ("HEALTHY", "DEGRADED"))
+            print(Style.dim(f"Dashboard is up; {up}/{len(servers)} backends healthy."))
+        return 0
+
+    print(Style.red("Relay did not answer within 60s."))
+    print(Style.dim("  py relay.py logs   to see why"))
+    return 1
 
 
 def cmd_build(args) -> int:
@@ -1203,6 +1705,16 @@ def cmd_status(args) -> int:
         age = time.strftime("%Y-%m-%d %H:%M", time.localtime(jar.stat().st_mtime))
         stale = Style.yellow(" (older than sources)") if jar_is_stale() else ""
         print(f"jar  {jar.name}  built {age}{stale}")
+
+        # A jar rebuilt under a running proxy leaves it unable to load classes it has
+        # not touched yet, which surfaces much later as a NoClassDefFoundError deep in
+        # Netty and reads like a proxy bug rather than a stale process.
+        for process in processes:
+            if process.started and process.started < jar.stat().st_mtime:
+                print(Style.yellow("     this process started before that jar was built, so it is "
+                                   "running stale code"))
+                print(Style.dim("     restart it: py relay.py stop, then run/up"))
+                break
     else:
         print("jar  not built")
 
@@ -1234,6 +1746,243 @@ def cmd_status(args) -> int:
         except Exception as error:  # noqa: BLE001
             print(Style.red(f"could not read relay.toml: {error}"))
     return 0
+
+
+def dashboard_servers() -> list[dict] | None:
+    """The backend list from the dashboard, or None if it is not reachable."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    port = 8080
+    if CONFIG.exists():
+        try:
+            companions = load_toml(CONFIG).get("companions", {}) or {}
+            env = (companions.get("dashboard", {}) or {}).get("environment", {}) or {}
+            port = int(env.get("RELAY_DASHBOARD_PORT", port))
+        except Exception:
+            pass
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/servers", timeout=5) as response:
+            return _json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def cmd_dashboard_user(args) -> int:
+    """
+    Runs the dashboard's own account tool, which prompts for the password itself.
+
+    The password is never an argument here, and never passes through this process.
+    A password on a command line is in the shell history and in the process list --
+    and this script prints the commands it runs, so it would be in the terminal
+    scrollback too.
+    """
+    jar = DASHBOARD_JAR
+    if not jar.exists():
+        print(Style.yellow("Building the dashboard first."))
+        if run_gradle([":dashboard:build"]) != 0:
+            return 1
+    command = ["java", "-cp", str(jar), "dev.relay.dashboard.auth.Users", args.action]
+    if args.name:
+        command.append(args.name)
+        if args.action == "add":
+            command.append(args.role)
+    # stdin inherited, so java gets a real console to read a password from.
+    return subprocess.call(command, cwd=str(PROJECT))
+
+
+def cmd_fake(args) -> int:
+    """
+    Connects fake players, then reports where the proxy put them.
+
+    The tool holds the connections; this process prints the distribution
+    alongside it, because "where did they land" is the question being asked and
+    reading it off a dashboard by hand defeats the point.
+    """
+    jar = jar_path()
+    if jar is None or jar_is_stale():
+        print(Style.yellow("Building first."))
+        if run_gradle([":proxy:build"]) != 0:
+            return 1
+        jar = jar_path()
+    if jar is None:
+        print(Style.red("No jar found. Run `py relay.py build`."))
+        return 1
+
+    # Checked before anything connects: a proxy in online mode refuses every fake
+    # player identically, and forty copies of that is not a useful way to find out.
+    online = True
+    try:
+        online = bool(load_toml(CONFIG).get("online-mode", True)) if CONFIG.exists() else False
+    except Exception:
+        online = False
+
+    if online and not args.offline:
+        print(Style.red("online-mode = true in relay.toml."))
+        print("  Fake players cannot authenticate with Mojang.")
+        print(Style.yellow("  py relay.py fake --offline") + "  flips it, tests, and puts it back")
+        return 1
+
+    if online and args.offline:
+        # Restored in a finally below, so an interrupt cannot leave a proxy
+        # accepting anyone who claims a name. Doing this by hand is exactly how
+        # a config gets left in offline mode and forgotten.
+        return with_offline_mode(lambda: run_fake(args))
+
+    return run_fake(args)
+
+
+def restart_args(**overrides):
+    """
+    A namespace for cmd_restart built from the real parser.
+
+    Hand-rolling one means listing every option cmd_up happens to read, and
+    missing one fails at the moment it is used rather than when it is written --
+    which is how the first version of this crashed halfway through a test with
+    the config still flipped.
+    """
+    args = build_parser().parse_args(["restart", "--no-build"])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+
+def with_offline_mode(body) -> int:
+    """Runs body with online-mode off, and puts the config back whatever happens."""
+    original = CONFIG.read_text(encoding="utf-8-sig")
+    flipped = original.replace("online-mode = true", "online-mode = false", 1)
+    if flipped == original:
+        print(Style.red("Could not find `online-mode = true` to flip."))
+        return 1
+
+    print(Style.yellow("Switching to offline mode for this test."))
+    CONFIG.write_text(flipped, encoding="utf-8")
+    try:
+        if cmd_restart(restart_args()) != 0:
+            return 1
+        return body()
+    finally:
+        CONFIG.write_text(original, encoding="utf-8")
+        print()
+        print(Style.yellow("Restoring online mode and restarting."))
+        cmd_restart(restart_args())
+
+
+def run_fake(args) -> int:
+
+    if not relay_processes():
+        print(Style.red("Relay is not running. Start it with `py relay.py up`."))
+        return 1
+
+    jar = jar_path()
+    command = ["java", "-cp", str(jar), "dev.relay.tools.FakePlayers",
+               "--host", args.host, "--port", str(args.port),
+               "--count", str(args.count), "--stagger", str(args.stagger)]
+    if args.hold:
+        # Handed to the tool rather than enforced by killing it: a killed process on
+        # Windows never runs its shutdown hook, so its sockets die by reset and the
+        # proxy logs twenty errors that are the test's fault, not Relay's.
+        command += ["--for", str(args.hold)]
+    if args.protocol:
+        command += ["--protocol", str(args.protocol)]
+    if args.virtual_host:
+        command += ["--virtual-host", args.virtual_host]
+    if args.switch:
+        command += ["--switch", str(args.switch)]
+        # Everything configured by default, so switching exercises the real routing
+        # rather than a list someone had to remember to keep in step with relay.toml.
+        # An explicit --to narrows it, which is needed the moment backends differ in
+        # Minecraft version: a 1.21.8 client sent to a 1.20.2 server is refused, and
+        # that is the server being right rather than a result worth collecting.
+        for name in (args.to or fake_destinations()):
+            command += ["--to", name]
+
+    print(Style.dim("$ " + " ".join(command)))
+    process = subprocess.Popen(command, cwd=str(PROJECT))
+    try:
+        # Long enough for the staggered logins plus the switch each one makes.
+        time.sleep(args.count * args.stagger / 1000 + 6)
+        show_distribution()
+        print()
+        if args.hold:
+            # A bounded run so the caller gets its config back. Without this the
+            # only way to stop is a signal, and a signal on Windows skips the
+            # `finally` that restores online-mode -- leaving a proxy that accepts
+            # anyone who claims a name, which is the one outcome worth designing
+            # against.
+            print(f"Holding them online for {args.hold}s.")
+            # Read again while they are still on, not after. The first reading is taken
+            # before switching has moved anyone, so it describes the joins rather than
+            # the balancing -- and a reading taken once they have left describes nothing,
+            # which is what the first two versions of this printed. A fraction rather
+            # than a fixed offset, because the two processes start their timers moments
+            # apart and a five-second margin lost that race; the liveness check below is
+            # what makes it correct rather than merely likely.
+            time.sleep(max(args.hold * 0.6, 1))
+            if process.poll() is None:
+                print()
+                show_distribution()
+            try:
+                # The tool disconnects under its own power and exits; waiting for that
+                # rather than killing it is the whole point of passing --for down.
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            print("Holding them online. Ctrl+C to disconnect and stop.")
+            process.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    return 0
+
+
+def fake_destinations() -> list[str]:
+    """Groups if there are any, otherwise backends: what a player could type."""
+    try:
+        config = load_toml(CONFIG)
+    except Exception:
+        return []
+    groups = list((config.get("groups", {}) or {}).keys())
+    servers = list((config.get("servers", {}) or {}).keys())
+    grouped = {member for members in (config.get("groups", {}) or {}).values() for member in members}
+    return groups + [name for name in servers if name not in grouped]
+
+
+def show_distribution() -> None:
+    servers = dashboard_servers()
+    if servers is None:
+        print()
+        print(Style.yellow("The dashboard is not reachable, so the distribution "
+                           "cannot be read. Try /glist in game."))
+        return
+
+    print()
+    heading("Where they landed")
+    total = sum(s.get("players", 0) for s in servers)
+    if total == 0:
+        print(Style.yellow("Nobody is on any backend."))
+        return
+
+    width = max(len(s.get("name", "")) for s in servers)
+    for server in servers:
+        count = server.get("players", 0)
+        share = count / total if total else 0
+        # A bar, because the question is whether the split is even and two columns
+        # of numbers make that surprisingly hard to see.
+        bar = "#" * round(share * 30)
+        state = server.get("status", "")
+        note = "" if state == "HEALTHY" else Style.yellow(f"  [{state.lower()}]")
+        print(f"  {server.get('name', ''):<{width}}  {count:>4}  {bar}{note}")
+    print(f"  {'total':<{width}}  {total:>4}")
 
 
 def cmd_ping(args) -> int:
@@ -1342,7 +2091,14 @@ def cmd_test(args) -> int:
 # --------------------------------------------------------------------------- cli
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """
+    The command surface, built once and shared.
+
+    The control console dispatches typed lines through this same parser, so every
+    command behaves identically whether it came from the shell or the command
+    line, and neither can drift from the other.
+    """
     parser = argparse.ArgumentParser(
         prog="relay.py",
         description="Development helper for the Relay Minecraft proxy.",
@@ -1350,12 +2106,13 @@ def main() -> int:
         epilog="""typical loop:
   py relay.py link lobby C:/mc/lobby   once, per backend
   py relay.py doctor                   catch the mismatches that fail silently
-  py relay.py up                       a console window per backend, then the proxy
+  py relay.py up                       tabs for the backends and the proxy, then a
+                                       control console in this terminal
   py relay.py down                     stop all of it
 
 other:
   py relay.py start lobby --debug   one backend, with Paper's packet logging
-  py relay.py plugin lobby          install the backend-side debug plugin
+  py relay.py plugin lobby          install the backend-side plugin
   py relay.py run                   just the proxy, rebuilding if stale
   py relay.py ping                  prove the proxy answers a server-list ping
   py relay.py logs -f               follow the proxy log
@@ -1363,8 +2120,10 @@ other:
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("doctor", help="cross-check Relay and backend configuration").set_defaults(
-        func=cmd_doctor)
+    doctor = sub.add_parser("doctor", help="cross-check Relay and backend configuration")
+    doctor.add_argument("--live", action="store_true",
+                        help="also check the running stack: ports, health, plugin freshness")
+    doctor.set_defaults(func=cmd_doctor)
 
     link = sub.add_parser("link", help="record a backend's Paper install")
     link.add_argument("name")
@@ -1381,8 +2140,10 @@ other:
     start = sub.add_parser("start", help="start a backend (or all of them)")
     start.add_argument("name", nargs="?", help="backend name, or 'all'")
     start.add_argument("--debug", action="store_true", help="enable Paper's packet logging")
+    start.add_argument("--tabs", action="store_true",
+                       help="one window, a tab per backend (default when starting several)")
     start.add_argument("--console", action="store_true",
-                       help="open its own console window (default when starting several)")
+                       help="a separate window per backend")
     start.add_argument("--background", action="store_true",
                        help="detach with output to a file; nothing to type into")
     start.set_defaults(func=cmd_start)
@@ -1396,11 +2157,18 @@ other:
     up = sub.add_parser("up", help="start every backend in its own window, then run the proxy")
     up.add_argument("--debug", action="store_true", help="enable Paper's packet logging too")
     up.add_argument("--timeout", type=float, default=90.0, help="seconds to wait per backend")
+    up.add_argument("--windows", action="store_true",
+                    help="a separate window per backend instead of tabs")
     up.add_argument("--background", action="store_true",
-                    help="no console windows; log backends to files instead")
+                    help="no consoles at all; log backends to files instead")
     up.add_argument("--build", action="store_true")
     up.add_argument("--quiet", action="store_true")
+    up.add_argument("--no-shell", action="store_true",
+                    help="skip the control console and return to the prompt")
     up.set_defaults(func=cmd_up)
+
+    shell = sub.add_parser("console", help="a control console for the running stack")
+    shell.set_defaults(func=cmd_shell)
 
     down = sub.add_parser("down", help="stop the proxy and every backend")
     down.add_argument("--force", action="store_true",
@@ -1417,7 +2185,7 @@ other:
     build.add_argument("--skip-tests", action="store_true")
     build.set_defaults(func=cmd_build)
 
-    plugin = sub.add_parser("plugin", help="build and install the Paper debug plugin")
+    plugin = sub.add_parser("plugin", help="build and install the Paper-side plugin")
     plugin.add_argument("name", nargs="?", help="backend name, or 'all'")
     plugin.set_defaults(func=cmd_plugin)
 
@@ -1430,6 +2198,42 @@ other:
     ping.add_argument("--port", type=int, default=None)
     ping.add_argument("--protocol", type=int, default=764, help="client protocol to claim")
     ping.set_defaults(func=cmd_ping)
+
+    restart = sub.add_parser("restart", help="stop, rebuild, start, and wait until it answers")
+    restart.add_argument("--no-build", action="store_true", help="skip the rebuild")
+    restart.add_argument("--shell", action="store_true",
+                         help="open the control console once it is up")
+    restart.add_argument("--timeout", type=int, default=60, help="seconds to wait for backends")
+    restart.set_defaults(func=cmd_restart)
+
+    fake = sub.add_parser("fake", help="connect fake players and show where they land")
+    fake.add_argument("count", type=int, nargs="?", default=20, help="how many (default 20)")
+    fake.add_argument("--host", default="127.0.0.1")
+    fake.add_argument("--port", type=int, default=25565)
+    fake.add_argument("--stagger", type=int, default=150,
+                      help="milliseconds between connections (default 150)")
+    fake.add_argument("--offline", action="store_true",
+                      help="flip online-mode off for the test, then put it back")
+    fake.add_argument("--switch", type=int, default=0, metavar="MS",
+                      help="keep moving between servers, roughly this often")
+    fake.add_argument("--for", dest="hold", type=int, default=0, metavar="SECONDS",
+                      help="disconnect and stop after this long, instead of waiting for Ctrl+C")
+    fake.add_argument("--protocol", type=int, default=0, metavar="N",
+                      help="protocol version to speak (default 764, 1.20.2)")
+    fake.add_argument("--virtual-host", metavar="HOST",
+                      help="hostname to claim in the handshake, for testing forced hosts")
+    fake.add_argument("--to", action="append", metavar="NAME",
+                      help="restrict --switch to these backends; repeatable "
+                           "(default: everything in relay.toml)")
+    fake.set_defaults(func=cmd_fake)
+
+    user = sub.add_parser("dashboard-user", help="manage dashboard sign-in accounts")
+    user.add_argument("action", nargs="?", default="list",
+                      choices=["list", "add", "remove"])
+    user.add_argument("name", nargs="?")
+    user.add_argument("role", nargs="?", default="admin",
+                      help="viewer, moderator or admin (default admin)")
+    user.set_defaults(func=cmd_dashboard_user)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
     paper.add_argument("name")
@@ -1444,6 +2248,11 @@ other:
     test.add_argument("--filter", help="e.g. dev.relay.api.*")
     test.set_defaults(func=cmd_test)
 
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
     if not args.command:
         parser.print_help()

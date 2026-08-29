@@ -1,5 +1,8 @@
 package dev.relay.session;
 
+import dev.relay.api.backend.BackendApi;
+import dev.relay.api.backend.BackendApiHandler;
+import dev.relay.protocol.packet.PluginMessagePacket;
 import dev.relay.net.SessionHandler;
 import dev.relay.protocol.Packet;
 import dev.relay.proxy.ConnectedPlayer;
@@ -10,6 +13,8 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
 
 /**
  * Steady-state relay of backend traffic to the player.
@@ -22,9 +27,15 @@ public final class BackendPlaySessionHandler implements SessionHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(BackendPlaySessionHandler.class);
 
+    /** The channel a peer uses to announce which plugin channels it accepts. */
+    private static final String REGISTER_CHANNEL = "minecraft:register";
+
     private final RelayProxy proxy;
     private final ServerConnection server;
     private final PacketTrail fromBackend = new PacketTrail();
+    private final BackendApiHandler api;
+    /** Null when moving players off a dying backend is switched off; kicks then relay as-is. */
+    private final BackendKickHandler kicks;
 
     /** Counted separately from received: a gap means packets were dropped, not relayed. */
     private long delivered;
@@ -32,10 +43,46 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     public BackendPlaySessionHandler(RelayProxy proxy, ServerConnection server) {
         this.proxy = proxy;
         this.server = server;
+        this.api = proxy.config().backendApiEnabled() ? new BackendApiHandler(proxy, server) : null;
+        this.kicks = proxy.config().fallbackOnBackendLoss() ? new BackendKickHandler(proxy, server) : null;
+    }
+
+    /**
+     * Tells the backend which plugin channels this connection accepts.
+     *
+     * <p>Required, not optional. Bukkit's {@code sendPluginMessage} silently drops a
+     * message whose channel the receiving client has not registered, and Relay is the
+     * client as far as a backend is concerned. Without this announcement a plugin can
+     * call the API all it likes and nothing ever leaves the server &mdash; which presents
+     * as the proxy ignoring requests it never actually received.
+     *
+     * <p>The payload is the channel names separated by NUL bytes, which is what
+     * {@code minecraft:register} has always carried.
+     */
+    @Override
+    public void activated() {
+        if (api == null) {
+            return;
+        }
+        String channels = String.join("\0", BackendApi.BUNGEE_CHANNEL, BackendApi.RELAY_CHANNEL);
+        server.connection().write(new PluginMessagePacket(
+                REGISTER_CHANNEL, channels.getBytes(StandardCharsets.UTF_8)));
+        LOG.debug("Registered {} with {} so it will send API messages",
+                channels.replace('\0', ' '), server.target().name());
     }
 
     @Override
     public void handleUnknown(ByteBuf frame) {
+        // Plugin messages the backend addresses to the proxy are claimed here rather
+        // than relayed on to the player, who has no use for proxy control traffic.
+        if (api != null && api.tryHandle(frame)) {
+            return;
+        }
+        // A kick is claimed too. Relaying it would take the player off the network before
+        // Relay could move them, which is exactly what a restart must not do.
+        if (kicks != null && kicks.tryHandle(frame)) {
+            return;
+        }
         forward(frame);
     }
 
@@ -47,6 +94,13 @@ public final class BackendPlaySessionHandler implements SessionHandler {
     private void forward(Object msg) {
         ConnectedPlayer player = server.player();
         fromBackend.record(msg);
+        if (player.isLeavingPlay()) {
+            // The player has been asked to leave play state. Their client may already be
+            // decoding as configuration, so a play packet delivered now corrupts the
+            // connection. Dropped rather than queued: it is state the player is about to
+            // stop having, and the new backend will send its own.
+            return;
+        }
         if (player.connectedServer() == server && player.isActive()) {
             player.connection().relay(msg);
             delivered++;
@@ -93,8 +147,10 @@ public final class BackendPlaySessionHandler implements SessionHandler {
 
         player.setConnectedServer(null);
         server.disconnect();
-        player.disconnect(Component.text("Lost connection to " + server.target().name(),
-                NamedTextColor.RED));
+        // Detached first, so the rescue below starts from a player with no backend
+        // rather than one still pointing at a socket that has gone.
+        new BackendConnector(proxy, player).fallbackAfterLoss(server.target(),
+                Component.text("Lost connection to " + server.target().name() + ".", NamedTextColor.RED));
     }
 
     /** The mirror of the player-side backpressure check. */

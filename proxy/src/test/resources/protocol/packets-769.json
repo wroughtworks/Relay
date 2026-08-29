@@ -1,0 +1,69 @@
+{
+  "_comment": "Mojang's own packet report, trimmed to the packets Relay depends on. Generated, not hand-written: see docs/protocol-ids.md.",
+  "_source": "Paper 1.21.4 build 232, java -DbundlerMainClass=net.minecraft.data.Main -jar <jar> --reports",
+  "_protocol": 769,
+  "_release": "1.21.4",
+  "configuration": {
+    "serverbound": {
+      "minecraft:client_information": {
+        "protocol_id": 0
+      },
+      "minecraft:custom_payload": {
+        "protocol_id": 2
+      },
+      "minecraft:finish_configuration": {
+        "protocol_id": 3
+      }
+    },
+    "clientbound": {
+      "minecraft:custom_payload": {
+        "protocol_id": 1
+      },
+      "minecraft:disconnect": {
+        "protocol_id": 2
+      },
+      "minecraft:finish_configuration": {
+        "protocol_id": 3
+      }
+    }
+  },
+  "play": {
+    "serverbound": {
+      "minecraft:accept_teleportation": {
+        "protocol_id": 0
+      },
+      "minecraft:chat_command": {
+        "protocol_id": 5
+      },
+      "minecraft:configuration_acknowledged": {
+        "protocol_id": 14
+      },
+      "minecraft:custom_payload": {
+        "protocol_id": 20
+      },
+      "minecraft:keep_alive": {
+        "protocol_id": 26
+      }
+    },
+    "clientbound": {
+      "minecraft:custom_payload": {
+        "protocol_id": 25
+      },
+      "minecraft:disconnect": {
+        "protocol_id": 29
+      },
+      "minecraft:keep_alive": {
+        "protocol_id": 39
+      },
+      "minecraft:player_position": {
+        "protocol_id": 66
+      },
+      "minecraft:start_configuration": {
+        "protocol_id": 112
+      },
+      "minecraft:system_chat": {
+        "protocol_id": 115
+      }
+    }
+  }
+}

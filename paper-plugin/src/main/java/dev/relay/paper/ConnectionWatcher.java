@@ -1,4 +1,4 @@
-package dev.relay.debug;
+package dev.relay.paper;
 
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -18,7 +18,7 @@ import java.io.StringWriter;
  */
 final class ConnectionWatcher extends ChannelDuplexHandler {
 
-    private final RelayDebugPlugin plugin;
+    private final Reporter plugin;
     private final String player;
     private final boolean logPackets;
 
@@ -26,7 +26,7 @@ final class ConnectionWatcher extends ChannelDuplexHandler {
     private long packetsIn;
     private long packetsOut;
 
-    ConnectionWatcher(RelayDebugPlugin plugin, String player, boolean logPackets) {
+    ConnectionWatcher(Reporter plugin, String player, boolean logPackets) {
         this.plugin = plugin;
         this.player = player;
         this.logPackets = logPackets;
@@ -86,13 +86,28 @@ final class ConnectionWatcher extends ChannelDuplexHandler {
         if (logPackets) {
             plugin.detail(player + " OUT " + describe(msg));
         }
-        // A write that fails is a common way for a connection to die quietly: the
-        // failure lands on the promise, not on exceptionCaught.
-        promise.addListener(future -> {
-            if (!future.isSuccess() && future.cause() != null) {
-                plugin.report(player + ": a write to this connection failed", future.cause());
-            }
-        });
+        // A write that fails is a common way for a connection to die quietly: the failure
+        // lands on the promise, not on exceptionCaught. So the promise is worth watching
+        // -- unless it is a *void* promise, which cannot carry a listener at all.
+        // addListener on one throws IllegalStateException("void future").
+        //
+        // Paper sends play packets that way from 1.21 onwards. This handler therefore
+        // threw on the first packet after a player joined, the exception travelled up to
+        // Connection.exceptionCaught, and Paper disconnected them: every player, every
+        // join, on every 1.21 backend. A diagnostic that caused the fault it existed to
+        // observe, and invisible on 1.20.2, where the promises are real.
+        //
+        // Nothing is lost by skipping it. Netty reports a void promise's failure through
+        // exceptionCaught instead, which this handler already watches -- that is what
+        // "void" means. Unvoiding to keep the listener would work too, at the cost of an
+        // allocation for every packet the server sends.
+        if (!promise.isVoid()) {
+            promise.addListener(future -> {
+                if (!future.isSuccess() && future.cause() != null) {
+                    plugin.report(player + ": a write to this connection failed", future.cause());
+                }
+            });
+        }
         super.write(ctx, msg, promise);
     }
 

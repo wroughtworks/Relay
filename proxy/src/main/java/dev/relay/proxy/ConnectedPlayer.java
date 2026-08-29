@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** A player, their socket, and whichever backend they are currently talking to. */
@@ -29,8 +30,45 @@ public final class ConnectedPlayer {
     private final String virtualHost;
     private final long connectedAt = System.currentTimeMillis();
 
+    /**
+     * Spec &sect;7.7's route id, issued once per session.
+     *
+     * <p>Its stated job is loop prevention across chained proxies, which is a v2 concern.
+     * Issuing it now costs eight characters and makes a session greppable: one token ties
+     * every log line, event and dashboard row for one visit together, which is the thing
+     * that is missing at three in the morning.
+     */
+    private final String routeId = UUID.randomUUID().toString().substring(0, 8);
+
     private final AtomicReference<ServerConnection> connectedServer = new AtomicReference<>();
     private final AtomicReference<ServerConnection> connectionInFlight = new AtomicReference<>();
+
+    /** Held while a chain of fallback candidates is being walked for this player. */
+    private final AtomicBoolean recovering = new AtomicBoolean();
+
+    private long lastFallbackAt;
+    private int consecutiveFallbacks;
+
+    /**
+     * The last backend this player actually entered play on.
+     *
+     * <p>Distinct from {@link #connectedServer()}, which is null for the length of a
+     * switch. Something has to remember where they came from across that gap, or an
+     * arrival cannot be told from a first join and a disconnect cannot say where it
+     * happened.
+     */
+    private volatile RegisteredServer lastArrival;
+
+    /**
+     * True from the moment this player is asked to leave play state until they arrive.
+     *
+     * <p>The client switches its own decoder to configuration the instant it sends the
+     * acknowledgement, which is before Relay can possibly know. Anything still arriving
+     * from the old backend after that point is decoded against the wrong state and
+     * corrupts the connection, so it must stop being forwarded when the request goes out
+     * rather than when the answer comes back.
+     */
+    private volatile boolean leavingPlay;
 
     public ConnectedPlayer(MinecraftConnection connection, GameProfile profile, ProtocolVersion version,
                            String virtualHost) {
@@ -67,6 +105,21 @@ public final class ConnectedPlayer {
 
     public long connectedAt() {
         return connectedAt;
+    }
+
+    public String routeId() {
+        return routeId;
+    }
+
+    /**
+     * The upstream proxy this player arrived through, or {@code null} if they came direct.
+     *
+     * <p>Known only from a PROXY protocol header. Without one, anything in front of Relay
+     * is invisible to it by design.
+     */
+    public InetSocketAddress proxiedFrom() {
+        SocketAddress upstream = connection.upstreamAddress();
+        return upstream instanceof InetSocketAddress inet ? inet : null;
     }
 
     public SocketAddress remoteAddress() {
@@ -107,6 +160,64 @@ public final class ConnectedPlayer {
 
     public void endConnect(ServerConnection attempt) {
         connectionInFlight.compareAndSet(attempt, null);
+    }
+
+    /**
+     * Claims the right to walk a list of servers looking for one that will take this
+     * player.
+     *
+     * <p>Exactly one chain may run at a time. Both the initial join and a rescue after a
+     * backend dies work by trying candidates in order, and a second chain starting
+     * underneath the first would have two attempts racing to configure one client
+     * &mdash; the same hazard {@link #beginConnect} guards, one level up.
+     *
+     * @return {@code false} if a chain is already running, in which case the caller must
+     *         leave the player to it
+     */
+    public boolean beginRecovery() {
+        return recovering.compareAndSet(false, true);
+    }
+
+    public void endRecovery() {
+        recovering.set(false);
+    }
+
+    public boolean isRecovering() {
+        return recovering.get();
+    }
+
+    /**
+     * Counts a rescue, treating ones close together as a single flapping episode.
+     *
+     * <p>Two backends that both accept a player and then drop them would otherwise pass
+     * them back and forth forever. Spacing is what separates that from ordinary
+     * operation: a server going down twice inside the window is already abnormal,
+     * whereas one going down twice in an evening should get a full set of retries each
+     * time.
+     *
+     * @return how many rescues have now happened in a row within {@code windowMillis}
+     */
+    public int recordFallback(long windowMillis) {
+        long now = System.currentTimeMillis();
+        consecutiveFallbacks = now - lastFallbackAt <= windowMillis ? consecutiveFallbacks + 1 : 1;
+        lastFallbackAt = now;
+        return consecutiveFallbacks;
+    }
+
+    public RegisteredServer lastArrival() {
+        return lastArrival;
+    }
+
+    public void setLastArrival(RegisteredServer server) {
+        this.lastArrival = server;
+    }
+
+    public boolean isLeavingPlay() {
+        return leavingPlay;
+    }
+
+    public void setLeavingPlay(boolean leaving) {
+        this.leavingPlay = leaving;
     }
 
     public boolean isActive() {

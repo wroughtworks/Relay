@@ -6,6 +6,7 @@ import dev.relay.protocol.Packet;
 import dev.relay.protocol.ProtocolState;
 import dev.relay.protocol.packet.config.FinishConfigurationAckPacket;
 import dev.relay.proxy.ConnectedPlayer;
+import dev.relay.proxy.RegisteredServer;
 import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
 import io.netty.buffer.ByteBuf;
@@ -88,12 +89,24 @@ public final class ClientConfigSessionHandler implements SessionHandler {
 
         player.setConnectedServer(current);
         player.endConnect(current);
+        // Back in play, so backend traffic may flow again.
+        player.setLeavingPlay(false);
         current.markEstablished();
 
         player.connection().setSessionHandler(new ClientPlaySessionHandler(proxy, player));
         backend.setSessionHandler(new BackendPlaySessionHandler(proxy, current));
 
         LOG.info("{} is now playing on {}", player.username(), current.target().name());
+
+        // Where they were is the only thing separating a first join from a move, since
+        // connectedServer is null for the whole of a switch.
+        RegisteredServer from = player.lastArrival();
+        player.setLastArrival(current.target());
+        if (from == null) {
+            proxy.events().playerConnected(player, current.target());
+        } else {
+            proxy.events().playerSwitchedServer(player, from, current.target());
+        }
         return true;
     }
 

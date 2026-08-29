@@ -4,6 +4,7 @@ import dev.relay.net.MinecraftConnection;
 import dev.relay.net.SessionHandler;
 import dev.relay.protocol.Packet;
 import dev.relay.protocol.ProtocolState;
+import dev.relay.protocol.ProtocolUtils;
 import dev.relay.protocol.packet.play.StartConfigurationPacket;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.RelayProxy;
@@ -53,6 +54,14 @@ public final class BackendConfigSessionHandler implements SessionHandler {
 
         // Mid-game switch. Ask the client to leave play state; ClientPlaySessionHandler
         // fires the callback once it acknowledges.
+        //
+        // Marked as leaving before the request goes out, not after the reply comes back.
+        // A client switches its own decoder to configuration state the moment it sends
+        // the acknowledgement, and Relay cannot learn of that until the packet arrives --
+        // so anything the old backend sends in between would reach a client decoding it
+        // against the wrong state. A chunk read as configuration data is what produces
+        // "Index 37 out of bounds for length 9" on the client's disconnect screen.
+        player.setLeavingPlay(true);
         attempt.setClientReadyCallback(this::onClientReady);
         player.connection().write(StartConfigurationPacket.INSTANCE);
     }
@@ -72,6 +81,8 @@ public final class BackendConfigSessionHandler implements SessionHandler {
         }
 
         if (!pending.isEmpty()) {
+            LOG.debug("Draining queued configuration to {} for the switch to {}",
+                    player.username(), attempt.target().name());
             pending.drainTo(player.connection());
         }
     }
@@ -88,6 +99,15 @@ public final class BackendConfigSessionHandler implements SessionHandler {
 
     private void forward(Object msg) {
         MinecraftConnection client = attempt.player().connection();
+        // The configuration phase of a switch is short and entirely opaque to Relay, so
+        // when a client rejects it there is otherwise nothing to inspect. Logging each
+        // packet id names the one it stopped on.
+        if (LOG.isDebugEnabled() && msg instanceof ByteBuf frame) {
+            LOG.debug("{} config -> {}: 0x{} ({}B){}", attempt.target().name(),
+                    attempt.player().username(),
+                    Integer.toHexString(ProtocolUtils.readVarInt(frame.duplicate())),
+                    frame.readableBytes(), clientReady ? "" : " [queued]");
+        }
         if (clientReady && client.isActive()) {
             client.relay(msg);
             return;
@@ -108,12 +128,20 @@ public final class BackendConfigSessionHandler implements SessionHandler {
             attempt.markUnreachable(new IllegalStateException(
                     "Backend " + attempt.target().name() + " closed the connection during configuration"));
         }
-        // If the player was already committed to this backend there is nothing to fall
-        // back to; they have taken on its registries.
-        if (attempt.player().connectedServer() == attempt) {
-            attempt.player().disconnect(Component.text("Lost connection to " + attempt.target().name(),
-                    NamedTextColor.RED));
+        ConnectedPlayer player = attempt.player();
+        ServerConnection current = player.connectedServer();
+        if (current != null && current != attempt) {
+            // A switch that died before the client agreed to leave play state. The
+            // player never went anywhere, so they are still on their old server and
+            // whoever asked for the switch has already been told it failed.
+            return;
         }
+
+        // Otherwise the client is in configuration state with nothing configuring it,
+        // which no amount of waiting fixes: either another backend picks the client up
+        // where this one dropped it, or the session ends with a reason.
+        new BackendConnector(proxy, player).fallbackAfterLoss(attempt.target(), Component.text(
+                "Lost connection to " + attempt.target().name() + ".", NamedTextColor.RED));
     }
 
     @Override

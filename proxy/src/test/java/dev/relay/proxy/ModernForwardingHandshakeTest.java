@@ -144,6 +144,8 @@ class ModernForwardingHandshakeTest {
                 motd = "test"
                 online-mode = false
                 forwarding-mode = "modern"
+                health.enabled = false
+                control.enabled = false
                 forwarding-secret = "%s"
                 compression-threshold = -1
 

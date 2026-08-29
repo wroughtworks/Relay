@@ -386,6 +386,8 @@ class ClientApiSessionTest {
                 motd = "test"
                 online-mode = false
                 forwarding-mode = "none"
+                health.enabled = false
+                control.enabled = false
                 compression-threshold = -1
                 client-api = true
 
