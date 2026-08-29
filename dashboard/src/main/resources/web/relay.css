@@ -200,6 +200,37 @@ svg.spark.alt .line { stroke: var(--accent); }
 .t { color: var(--muted); margin-right: 10px; }
 .who { color: var(--accent); }
 
+/* -------------------------------------------------------------------- console */
+
+.consoleBar { display: flex; align-items: center; gap: 8px; margin-left: auto;
+              text-transform: none; letter-spacing: 0; font-weight: 400; }
+.consoleBar select, .consoleBar input[type=search] {
+  font: inherit; font-size: 12px; padding: 3px 7px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+}
+.consoleBar input[type=search] { width: 130px; }
+.consoleBar label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+#logCount { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+#console { font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+           max-height: 380px; overflow-y: auto; padding: 8px 0; }
+#console .ln { display: grid; grid-template-columns: 68px 52px 150px 1fr;
+               gap: 10px; padding: 1px 16px; white-space: pre-wrap; word-break: break-word; }
+#console .ln:hover { background: var(--sunken); }
+#console .at, #console .lg { color: var(--muted); }
+#console .lg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#console .lv { font-weight: 600; }
+#console .ln.ERROR .lv { color: var(--bad); }
+#console .ln.WARN  .lv { color: var(--accent); }
+#console .ln.INFO  .lv { color: var(--good); }
+#console .ln.DEBUG .lv, #console .ln.TRACE .lv { color: var(--muted); }
+#console .ln.ERROR { background: color-mix(in srgb, var(--bad) 7%, transparent); }
+
+@media (max-width: 760px) {
+  #console .ln { grid-template-columns: 60px 46px 1fr; }
+  #console .lg { display: none; }
+}
+
 footer { color: var(--muted); font-size: 12px; padding: 0 24px 32px; max-width: 1240px; }
 
 /* Narrow screens: the search box takes its own line rather than squeezing the

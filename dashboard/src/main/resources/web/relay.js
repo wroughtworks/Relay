@@ -354,6 +354,94 @@ async function refresh() {
   }
 }
 
+// ---------------------------------------------------------------------- console
+
+/**
+ * Relay's own log, live (§9.1).
+ *
+ * <p>Held as data and re-rendered on filter changes rather than appended straight to the
+ * DOM, because a filter that only applies to lines arriving after you set it is a filter
+ * nobody trusts. The cost is a redraw per line, which at this volume is nothing.
+ */
+const LEVELS = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
+
+/**
+ * How many raw lines are held before the oldest is dropped.
+ *
+ * Filtering happens here rather than at the proxy, which means a noisy DEBUG stream
+ * competes for this buffer with the INFO lines someone is actually reading: set the
+ * filter to "info and up" under load and the visible count *falls* as debug lines push
+ * the interesting ones out. Two thousand is enough that the effect stops mattering at
+ * any sane level, and it is a few hundred kilobytes. A proxy running at DEBUG under
+ * real traffic still turns this into a short window -- the log file is the long record,
+ * and always was.
+ */
+const LOG_LIMIT = 2000;
+let logLines = [];
+
+const clock = ms => new Date(ms).toLocaleTimeString([], { hour12: false });
+
+function logPasses(line) {
+  const min = LEVELS[$("logLevel").value] ?? 0;
+  if ((LEVELS[line.level] ?? 0) < min) return false;
+  const q = $("logSearch").value.trim().toLowerCase();
+  if (!q) return true;
+  return (line.message + " " + line.logger + " " + line.thread).toLowerCase().includes(q);
+}
+
+function paintConsole() {
+  const host = $("console");
+  const shown = logLines.filter(logPasses);
+  $("logCount").textContent = shown.length === logLines.length
+    ? logLines.length + " lines"
+    : shown.length + " of " + logLines.length;
+
+  if (!shown.length) {
+    const none = document.createElement("div");
+    none.className = "empty";
+    none.textContent = logLines.length ? "nothing matches this filter" : "waiting for the proxy";
+    host.replaceChildren(none);
+    return;
+  }
+
+  // Sticking to the bottom is only correct while the reader is already there. Scrolling
+  // up to read something and being yanked back by the next line is the single most
+  // annoying thing a live log can do.
+  const atBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 40;
+
+  host.replaceChildren(...shown.map(line => {
+    const div = document.createElement("div");
+    div.className = "ln " + line.level;
+    for (const [cls, text] of [["at", clock(line.at)], ["lv", line.level],
+                               ["lg", line.logger], ["ms", line.message]]) {
+      const span = document.createElement("span");
+      span.className = cls;
+      span.textContent = text;
+      div.appendChild(span);
+    }
+    div.title = line.thread;
+    return div;
+  }));
+
+  if ($("logFollow").checked && atBottom) host.scrollTop = host.scrollHeight;
+}
+
+function addLogLine(line) {
+  logLines.push(line);
+  if (logLines.length > LOG_LIMIT) logLines = logLines.slice(-LOG_LIMIT);
+  paintConsole();
+}
+
+async function loadLog() {
+  try {
+    const lines = await fetch("api/log").then(r => r.json());
+    logLines = (lines || []).slice(-LOG_LIMIT);
+    paintConsole();
+  } catch (e) {
+    // The page already reports the connection; a second complaint here says nothing.
+  }
+}
+
 function log(text, who) {
   const feed = $("feed");
   if (feed.firstChild && feed.firstChild.className === "empty") feed.replaceChildren();
@@ -375,13 +463,22 @@ function connect() {
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://")
     + location.host + "/api/events");
 
-  ws.onopen = () => $("link").classList.remove("down");
+  ws.onopen = () => {
+    $("link").classList.remove("down");
+    // Re-read the tail on every reconnect: whatever happened while the socket was down
+    // is exactly the part worth seeing, and the proxy kept it.
+    loadLog();
+  };
   ws.onclose = () => {
     $("link").classList.add("down");
     setTimeout(connect, 3000);
   };
   ws.onmessage = e => {
     const ev = JSON.parse(e.data);
+    if (ev.type === "log") {
+      addLogLine(ev);
+      return;
+    }
     const who = ev.player ? ev.player.username : ev.server ?? "someone";
     // `type` is the envelope and is always the literal "event"; `kind` is what
     // happened. Reading the wrong one made every line in this feed say "event",
@@ -399,6 +496,11 @@ function connect() {
 }
 
 $("search").addEventListener("input", e => { search = e.target.value.trim(); paintPlayers(); });
+$("logLevel").addEventListener("change", paintConsole);
+$("logSearch").addEventListener("input", paintConsole);
+$("logFollow").addEventListener("change", () => {
+  if ($("logFollow").checked) $("console").scrollTop = $("console").scrollHeight;
+});
 $("clear").addEventListener("click", () => select(null));
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") select(null);
@@ -409,5 +511,6 @@ document.addEventListener("keydown", e => {
 });
 
 refresh();
+loadLog();
 setInterval(refresh, 5000);
 connect();

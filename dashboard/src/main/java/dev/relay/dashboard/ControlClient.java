@@ -179,7 +179,10 @@ final class ControlClient implements AutoCloseable {
                     future.complete(message.get("data"));
                 }
             }
-            case "event" -> onEvent.accept(message);
+            // Log lines ride the same consumer as state events. They are told apart by
+            // their own "type", and the difference matters on the far side: a state
+            // event invalidates cached answers, and a log line invalidates nothing.
+            case "event", "log" -> onEvent.accept(message);
             case "goodbye" -> {
                 LOG.info("Relay is shutting down; following it");
                 onGoodbye.run();

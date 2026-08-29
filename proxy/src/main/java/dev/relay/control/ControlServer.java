@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.relay.log.LogTail;
 import dev.relay.proxy.ProxyEvents;
 import dev.relay.proxy.RelayProxy;
 import io.netty.bootstrap.ServerBootstrap;
@@ -24,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.security.SecureRandom;
+import java.util.function.Consumer;
 import java.util.Base64;
 
 /**
@@ -92,6 +94,20 @@ public final class ControlServer {
         }
     };
 
+    /**
+     * Forwards each log line as it is written.
+     *
+     * <p>Held as a field so it can be removed on stop: the buffer is static and outlives
+     * any one proxy, so a listener left behind by a stopped proxy would keep writing to a
+     * closed channel group for the life of the JVM. Tests start and stop several.
+     */
+    private final Consumer<LogTail.Line> logListener = line -> {
+        if (!subscribers.isEmpty()) {
+            write(new LogEvent("log", line.at(), line.level(), line.logger(),
+                    line.thread(), line.message()));
+        }
+    };
+
     private Channel listener0;
 
     public ControlServer(RelayProxy proxy) {
@@ -134,6 +150,7 @@ public final class ControlServer {
                 .channel();
 
         proxy.events().addListener(listener);
+        LogTail.addListener(logListener);
         LOG.info("Control    {}:{} (companions authenticate with a per-start token)",
                 bind.getHostString(), port());
     }
@@ -149,6 +166,7 @@ public final class ControlServer {
      */
     public void stop() {
         proxy.events().removeListener(listener);
+        LogTail.removeListener(logListener);
         if (!subscribers.isEmpty()) {
             write(new Event("goodbye", null, null, null, null, null));
         }
@@ -165,9 +183,28 @@ public final class ControlServer {
         }
     }
 
-    private void write(Event event) {
+    /**
+     * Writes one newline-delimited JSON message to every companion.
+     *
+     * <p>Takes {@code Object} because there are two envelopes on this channel now and
+     * they have nothing in common but being serialisable. A shared supertype would exist
+     * only to satisfy this signature.
+     */
+    private void write(Object event) {
         String line = gson.toJson(event) + "\n";
         subscribers.writeAndFlush(line);
+    }
+
+    /**
+     * A log line on its way to a companion.
+     *
+     * <p>Its own envelope rather than another {@code kind} on {@link Event}, because these
+     * arrive orders of magnitude more often than a player joining and share none of its
+     * fields. Squeezing them into one shape would mean a record that is nine-tenths null
+     * on every message.
+     */
+    private record LogEvent(String type, long at, String level, String logger,
+                            String thread, String message) {
     }
 
     /** One envelope for everything pushed, so a companion reads one shape. */
@@ -242,6 +279,7 @@ public final class ControlServer {
                 case "groups" -> state.groups();
                 case "players" -> state.players();
                 case "metrics" -> state.metrics();
+                case "log" -> LogTail.recent();
                 default -> null;
             };
 

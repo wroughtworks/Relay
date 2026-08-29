@@ -116,7 +116,7 @@ public final class DashboardMain {
         // not this process's: the dashboard renders what Relay reports and invents nothing.
         server.get("/api/health", ctx -> ctx.json(Map.of(
                 "status", control.isConnected() ? "ok" : "disconnected")));
-        for (String what : new String[] {"overview", "servers", "groups", "players", "metrics"}) {
+        for (String what : new String[] {"overview", "servers", "groups", "players", "metrics", "log"}) {
             server.get("/api/" + what, ctx -> ctx.contentType("application/json").result(ask(what)));
         }
 
@@ -156,7 +156,13 @@ public final class DashboardMain {
 
     /** Forwards a proxy event to every browser watching, unchanged. */
     private void onEvent(JsonObject event) {
-        cache.clear();
+        // A log line says nothing about players or backends, and at DEBUG they arrive
+        // dozens a second. Clearing the cache for each one would turn the console into a
+        // load generator against the very proxy it is reporting on.
+        boolean isLog = event.has("type") && "log".equals(event.get("type").getAsString());
+        if (!isLog) {
+            cache.clear();
+        }
         if (browsers.isEmpty()) {
             return;
         }

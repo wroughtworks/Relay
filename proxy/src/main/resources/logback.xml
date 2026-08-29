@@ -33,6 +33,12 @@
     </encoder>
   </appender>
 
+  <!-- Keeps the last few hundred lines in memory for the dashboard's console (spec
+       9.1). No file, no socket, no encoder: it hands the fields to a ring buffer and
+       the page decides how to show them, which is what makes filtering by level and
+       searching by logger possible on the far end. -->
+  <appender name="TAIL" class="dev.relay.log.TailAppender"/>
+
   <logger name="io.netty" level="INFO"/>
 
   <!-- Raise Relay's own logging without touching this file:
@@ -44,5 +50,6 @@
   <root level="INFO">
     <appender-ref ref="CONSOLE"/>
     <appender-ref ref="FILE"/>
+    <appender-ref ref="TAIL"/>
   </root>
 </configuration>

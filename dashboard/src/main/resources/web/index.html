@@ -57,6 +57,24 @@
 
   <h2>Events</h2>
   <div class="scroll"><div id="feed"><div class="empty">nothing yet</div></div></div>
+
+  <h2>Console
+    <span class="note">Relay's own log, live</span>
+    <span class="consoleBar">
+      <select id="logLevel" aria-label="minimum level">
+        <option value="TRACE">all</option>
+        <option value="DEBUG">debug and up</option>
+        <option value="INFO" selected>info and up</option>
+        <option value="WARN">warnings and errors</option>
+        <option value="ERROR">errors only</option>
+      </select>
+      <input id="logSearch" type="search" placeholder="filter" autocomplete="off"
+             aria-label="filter log lines">
+      <label><input type="checkbox" id="logFollow" checked> follow</label>
+      <span id="logCount"></span>
+    </span>
+  </h2>
+  <div class="scroll"><div id="console"><div class="empty">waiting for the proxy</div></div></div>
 </main>
 
 <footer>
