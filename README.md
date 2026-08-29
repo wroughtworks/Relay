@@ -12,8 +12,8 @@ those are phases 2 and 3.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real 1.20.2 client joins, plays, and switches servers |
-| 2. Dashboard | Javalin backend, React frontend, WebSocket live data, local auth | **Read-only API and a live page working**; auth and the acting half not started |
+| 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real client joins, plays, and switches servers, verified on 1.20.2, 1.21.4 and 1.21.8 |
+| 2. Dashboard | Javalin backend, WebSocket live data, local auth | **Working, read-only** — topology graph, per-player route tracing, traffic metrics, live console, sign-in with roles. The acting half (drain, send, kick) not started |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
