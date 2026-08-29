@@ -12,6 +12,7 @@
   <span class="sub" id="meta">connecting…</span>
   <input id="search" type="search" placeholder="Search players  ( / )" autocomplete="off"
          aria-label="search players">
+  <span id="who"></span>
   <span id="link">live <b>●</b></span>
 </header>
 
@@ -78,8 +79,8 @@
 </main>
 
 <footer>
-  Read-only. Nothing here can move a player, close a connection, or change config —
-  and player addresses are deliberately not served, since this port has no login yet.
+  Read-only. Nothing here can move a player, close a connection, or change config.
+  Player addresses are still not served: that waits on the role check, not on the login.
 </footer>
 
 <script type="module" src="relay.js"></script>

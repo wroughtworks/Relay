@@ -4,6 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import dev.relay.dashboard.auth.Auth;
+import dev.relay.dashboard.auth.Sessions;
+import dev.relay.dashboard.auth.UserStore;
 import io.javalin.Javalin;
 import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JsonMapper;
@@ -12,7 +15,9 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.lang.reflect.Type;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
@@ -64,6 +69,7 @@ public final class DashboardMain {
 
     private ControlClient control;
     private Javalin server;
+    private Auth auth;
 
     public static void main(String[] args) throws InterruptedException {
         new DashboardMain().run();
@@ -83,6 +89,29 @@ public final class DashboardMain {
         String bindHost = env("RELAY_DASHBOARD_HOST", "127.0.0.1");
         int bindPort = Integer.parseInt(env("RELAY_DASHBOARD_PORT", "8080"));
 
+        UserStore users = new UserStore(Path.of(env("RELAY_DASHBOARD_USERS", "dashboard-users.json")));
+        try {
+            users.load();
+        } catch (IOException broken) {
+            // Refusing to start beats starting with no accounts. A store that fell back to
+            // "nobody is configured" on a syntax error would answer a typo by taking the
+            // lock off the door.
+            LOG.error("Cannot read {}: {}", users.file(), broken.getMessage());
+            return;
+        }
+
+        boolean loopback = LOOPBACK.contains(bindHost.toLowerCase(Locale.ROOT));
+        boolean required = !users.isEmpty();
+        if (!required && !loopback) {
+            LOG.error("Refusing to bind {} with no accounts configured. An unauthenticated "
+                            + "dashboard on a reachable address tells anyone who finds it who is "
+                            + "online and where. Create an account first:", bindHost);
+            LOG.error("    py relay.py dashboard-user add <name>");
+            LOG.error("or bind to 127.0.0.1 and reach it through an SSH tunnel.");
+            return;
+        }
+        auth = new Auth(users, required);
+
         control = new ControlClient(host, controlPort, token, this::onEvent, stopped::countDown);
         control.start();
 
@@ -95,15 +124,16 @@ public final class DashboardMain {
                 files.location = Location.CLASSPATH;
             });
         });
+        auth.install(server);
         routes();
         server.start(bindHost, bindPort);
 
-        LOG.info("Dashboard on http://{}:{}", bindHost, bindPort);
-        if (!LOOPBACK.contains(bindHost.toLowerCase(Locale.ROOT))) {
-            LOG.warn("Bound to {} rather than loopback, and there is no authentication yet. Anyone who "
-                            + "can reach that address can see who is online and where. Put it behind "
-                            + "something that authenticates, or leave it on loopback and use an SSH tunnel.",
-                    bindHost);
+        LOG.info("Dashboard on http://{}:{} ({})", bindHost, bindPort,
+                required ? users.all().size() + " account(s), sign-in required" : "open, loopback only");
+        if (required && !loopback) {
+            LOG.warn("Bound to {} and serving over plain HTTP. Passwords and session cookies "
+                            + "cross the network in the clear unless something in front of this "
+                            + "terminates TLS (spec 11.2 suggests Caddy or nginx).", bindHost);
         }
 
         Runtime.getRuntime().addShutdownHook(new Thread(stopped::countDown));
@@ -122,6 +152,14 @@ public final class DashboardMain {
 
         server.ws("/api/events", ws -> {
             ws.onConnect(ctx -> {
+                // The before-handler does not run for a websocket upgrade, so the session
+                // is checked here. Without this the page's live feed would be readable by
+                // anyone who could open a socket, which is every bit as much a leak as
+                // the REST endpoints it mirrors.
+                if (auth.required() && auth.sessions().touch(ctx.cookie(Sessions.COOKIE)).isEmpty()) {
+                    ctx.closeSession();
+                    return;
+                }
                 // No timeout: these are long-lived by design, and Jetty's default would
                 // close an idle one, which is exactly what a quiet network looks like.
                 ctx.session.setIdleTimeout(Duration.ZERO);

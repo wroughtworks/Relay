@@ -19,6 +19,9 @@ relay-dev.json
 relay.toml
 forwarding.secret
 
+# Dashboard accounts: password hashes, and machine-local.
+dashboard-users.json
+
 .idea/
 *.iml
 .vscode/

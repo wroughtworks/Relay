@@ -510,7 +510,41 @@ document.addEventListener("keydown", e => {
   }
 });
 
+/**
+ * Who is signed in, if anyone.
+ *
+ * Also where the CSRF token comes from. It is deliberately not in a cookie: a token the
+ * browser attaches automatically is a token an attacker's page gets attached for them,
+ * which is the thing being defended against.
+ */
+async function whoAmI() {
+  try {
+    const me = await fetch("api/me").then(r => r.json());
+    const host = $("who");
+    if (!me.authenticated) {
+      host.textContent = me.required ? "" : "open — loopback only, no accounts configured";
+      return;
+    }
+    host.replaceChildren();
+    const name = document.createElement("b");
+    name.textContent = me.username;
+    host.append(name, document.createTextNode(" · " + me.role));
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "logout";
+    const out = document.createElement("button");
+    out.type = "submit";
+    out.textContent = "sign out";
+    form.appendChild(out);
+    host.appendChild(form);
+  } catch (e) {
+    // The page reports the proxy connection separately; this is not the place to
+    // duplicate that complaint.
+  }
+}
+
 refresh();
+whoAmI();
 loadLog();
 setInterval(refresh, 5000);
 connect();

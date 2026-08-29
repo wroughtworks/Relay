@@ -38,6 +38,8 @@ JAR_DIR = PROJECT / "proxy" / "build" / "libs"
 PLUGIN_JAR_DIR = PROJECT / "paper-plugin" / "build" / "libs"
 PLUGIN_JAR_GLOB = "Relay-*.jar"
 CONFIG = PROJECT / "relay.toml"
+# The dashboard companion's jar, for the account tool it carries.
+DASHBOARD_JAR = PROJECT / "dashboard" / "build" / "libs" / "relay-dashboard-0.1.0-SNAPSHOT.jar"
 DEV_CONFIG = PROJECT / "relay-dev.json"
 SOURCE_DIRS = [
     PROJECT / "proxy" / "src",
@@ -1767,6 +1769,29 @@ def dashboard_servers() -> list[dict] | None:
         return None
 
 
+def cmd_dashboard_user(args) -> int:
+    """
+    Runs the dashboard's own account tool, which prompts for the password itself.
+
+    The password is never an argument here, and never passes through this process.
+    A password on a command line is in the shell history and in the process list --
+    and this script prints the commands it runs, so it would be in the terminal
+    scrollback too.
+    """
+    jar = DASHBOARD_JAR
+    if not jar.exists():
+        print(Style.yellow("Building the dashboard first."))
+        if run_gradle([":dashboard:build"]) != 0:
+            return 1
+    command = ["java", "-cp", str(jar), "dev.relay.dashboard.auth.Users", args.action]
+    if args.name:
+        command.append(args.name)
+        if args.action == "add":
+            command.append(args.role)
+    # stdin inherited, so java gets a real console to read a password from.
+    return subprocess.call(command, cwd=str(PROJECT))
+
+
 def cmd_fake(args) -> int:
     """
     Connects fake players, then reports where the proxy put them.
@@ -2201,6 +2226,14 @@ other:
                       help="restrict --switch to these backends; repeatable "
                            "(default: everything in relay.toml)")
     fake.set_defaults(func=cmd_fake)
+
+    user = sub.add_parser("dashboard-user", help="manage dashboard sign-in accounts")
+    user.add_argument("action", nargs="?", default="list",
+                      choices=["list", "add", "remove"])
+    user.add_argument("name", nargs="?")
+    user.add_argument("role", nargs="?", default="admin",
+                      help="viewer, moderator or admin (default admin)")
+    user.set_defaults(func=cmd_dashboard_user)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
     paper.add_argument("name")
