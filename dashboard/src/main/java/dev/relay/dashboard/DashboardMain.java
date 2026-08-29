@@ -150,6 +150,21 @@ public final class DashboardMain {
             server.get("/api/" + what, ctx -> ctx.contentType("application/json").result(ask(what)));
         }
 
+        // History takes arguments, so it is not part of the cached pass-through above:
+        // caching one player's sessions under the key "history" would answer the next
+        // player's question with the previous player's answer.
+        server.get("/api/history", ctx -> {
+            JsonObject narrow = new JsonObject();
+            String uuid = ctx.queryParam("uuid");
+            if (uuid != null && !uuid.isBlank()) {
+                narrow.addProperty("uuid", uuid);
+            }
+            narrow.addProperty("limit", parseLimit(ctx.queryParam("limit")));
+            JsonElement data = control.query("history", narrow);
+            ctx.contentType("application/json")
+                    .result(data == null || data.isJsonNull() ? "[]" : gson.toJson(data));
+        });
+
         server.ws("/api/events", ws -> {
             ws.onConnect(ctx -> {
                 // The before-handler does not run for a websocket upgrade, so the session
@@ -168,6 +183,15 @@ public final class DashboardMain {
             ws.onClose(ctx -> browsers.remove(ctx));
             ws.onError(ctx -> browsers.remove(ctx));
         });
+    }
+
+    /** Clamped here as well as in the proxy: a companion should not be able to ask for a million rows. */
+    private static int parseLimit(String raw) {
+        try {
+            return Math.max(1, Math.min(Integer.parseInt(raw), 200));
+        } catch (RuntimeException notANumber) {
+            return 50;
+        }
     }
 
     private String ask(String what) {

@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.bundles.adventure)
     implementation(libs.nightconfig.toml)
     implementation(libs.gson)
+    implementation(libs.sqlite)
     implementation(libs.slf4j.api)
     // compileOnly as well as runtimeOnly, for the one class that is a logback
     // extension rather than a user of it: CompanionColour implements logback's

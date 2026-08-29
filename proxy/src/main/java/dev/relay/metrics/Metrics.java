@@ -65,6 +65,9 @@ public final class Metrics {
     private final Deque<Sample> history = new ArrayDeque<>(HISTORY);
     private final IntSupplier playerCount;
 
+    /** Where samples are kept once they fall out of the ring. Null when storage is off. */
+    private dev.relay.store.Database database;
+
     private ScheduledExecutorService sampler;
     private long lastAt;
     private long lastConnections;
@@ -175,6 +178,37 @@ public final class Metrics {
 
     // ------------------------------------------------------------------ sampling
 
+    /**
+     * Also write each sample to storage, so charts outlive a restart.
+     *
+     * <p>Optional on purpose. The ring above is what the dashboard draws from moment to
+     * moment and needs nothing on disk; persistence only extends how far back the
+     * question can be asked. Losing it costs history, not the feature.
+     */
+    public void persistTo(dev.relay.store.Database database) {
+        this.database = database;
+    }
+
+    /** Samples from before this proxy started, oldest first. */
+    public List<Sample> since(long from) {
+        if (database == null) {
+            return List.of();
+        }
+        return database.query("metric history",
+                "SELECT at, players, connections, bytes_in, bytes_out, connects, switches "
+                        + "FROM metric_sample WHERE at >= ? ORDER BY at",
+                results -> {
+                    try {
+                        return new Sample(results.getLong("at"), results.getInt("players"),
+                                results.getInt("connections"), results.getLong("bytes_in"),
+                                results.getLong("bytes_out"), results.getDouble("connects"),
+                                results.getDouble("switches"));
+                    } catch (java.sql.SQLException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }, from);
+    }
+
     public void start() {
         lastAt = System.currentTimeMillis();
         sampler = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -233,6 +267,17 @@ public final class Metrics {
                 history.removeFirst();
             }
             history.addLast(sample);
+        }
+
+        if (database != null) {
+            // INSERT OR REPLACE, because `at` is the primary key and two samples in the
+            // same millisecond would otherwise fail the whole batch they were in.
+            database.submit("metric sample",
+                    "INSERT OR REPLACE INTO metric_sample"
+                            + "(at, players, connections, bytes_in, bytes_out, connects, switches) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    sample.at(), sample.players(), sample.connections(),
+                    sample.bytesIn(), sample.bytesOut(), sample.connects(), sample.switches());
         }
     }
 

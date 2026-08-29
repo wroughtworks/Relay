@@ -22,6 +22,11 @@ forwarding.secret
 # Dashboard accounts: password hashes, and machine-local.
 dashboard-users.json
 
+# Storage: what happened on this node. Runtime data, not configuration.
+relay.db
+relay.db-shm
+relay.db-wal
+
 .idea/
 *.iml
 .vscode/

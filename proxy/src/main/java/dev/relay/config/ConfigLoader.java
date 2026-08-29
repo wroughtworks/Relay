@@ -158,6 +158,13 @@ public final class ConfigLoader {
         // On by default, unlike the dashboard: this one only makes routing better, and
         // costs one status ping per backend per interval -- the same request a server
         // list refresh makes.
+        // On by default. It is one small file beside the config, it is what makes the
+        // dashboard able to answer "what happened last night", and a proxy that records
+        // nothing cannot be asked afterwards.
+        boolean storageEnabled = config.getOrElse("storage.enabled", Boolean.TRUE);
+        String storageFile = config.getOrElse("storage.file", "relay.db");
+        int storageRetainDays = config.getIntOrElse("storage.retain-days", 14);
+
         boolean healthEnabled = config.getOrElse("health.enabled", Boolean.TRUE);
         int healthInterval = config.getIntOrElse("health.interval", 10000);
         int healthTimeout = config.getIntOrElse("health.timeout", 3000);
@@ -203,6 +210,7 @@ public final class ConfigLoader {
                 forwardingSecret, brand, compressionThreshold, compressionLevel, connectTimeout, readTimeout,
                 interceptCommands, fallbackOnBackendLoss, proxyProtocolReceive, proxyProtocolSend, clientApiEnabled, backendApiEnabled, traceCloses,
                 healthEnabled, healthInterval, healthTimeout, healthFailures,
+                storageEnabled, storageFile, storageRetainDays,
                 controlEnabled, controlBind, companions,
                 servers, groups, balance, tryOrder, forcedHosts, permissions, overrides);
     }

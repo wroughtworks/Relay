@@ -15,6 +15,8 @@ import dev.relay.control.ControlServer;
 import dev.relay.forwarding.ModernForwarding;
 import dev.relay.health.HealthChecker;
 import dev.relay.metrics.Metrics;
+import dev.relay.store.Database;
+import dev.relay.store.History;
 import dev.relay.protocol.PacketDirection;
 import dev.relay.protocol.ProtocolState;
 import dev.relay.protocol.ProtocolVersion;
@@ -61,6 +63,8 @@ public final class RelayProxy {
     /** Spec 10's counters. Player count is read from the registry rather than mirrored. */
     private final Metrics metrics = new Metrics(() -> players.count());
     private HealthChecker healthChecker;
+    private Database database;
+    private History history;
     private Path pidFile;
     private ControlServer control;
     private CompanionSupervisor companions;
@@ -110,6 +114,11 @@ public final class RelayProxy {
 
     public PlayerRegistry players() {
         return players;
+    }
+
+    /** @return the history recorder, or null when storage is off */
+    public History history() {
+        return history;
     }
 
     public Metrics metrics() {
@@ -284,6 +293,25 @@ public final class RelayProxy {
                 metrics.switched();
             }
         });
+        if (config.storageEnabled()) {
+            java.nio.file.Path databaseFile = config.sourcePath().getParent() == null
+                    ? java.nio.file.Path.of(config.storageFile())
+                    : config.sourcePath().getParent().resolve(config.storageFile());
+            database = new Database(databaseFile);
+            try {
+                database.start();
+                history = new History(database, config.storageRetainDays());
+                events.addListener(history.listener());
+                history.startPruning();
+                metrics.persistTo(database);
+            } catch (java.sql.SQLException e) {
+                // Not fatal. A proxy that refuses to carry players because a history
+                // table would not open has traded the job for the paperwork.
+                LOG.warn("Storage is unavailable, so nothing will be recorded: {}", e.getMessage());
+                database = null;
+                history = null;
+            }
+        }
         metrics.start();
         if (config.healthEnabled()) {
             healthChecker = new HealthChecker(this);
@@ -405,6 +433,15 @@ public final class RelayProxy {
             control.stop();
         }
         metrics.stop();
+        if (history != null) {
+            history.stopPruning();
+            // Before the database closes: a proxy that is stopped rather than killed
+            // should not leave a history full of players who apparently never left.
+            history.closeOpenSessions();
+        }
+        if (database != null) {
+            database.close();
+        }
         if (healthChecker != null) {
             healthChecker.stop();
         }

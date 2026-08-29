@@ -280,6 +280,13 @@ public final class ControlServer {
                 case "players" -> state.players();
                 case "metrics" -> state.metrics();
                 case "log" -> LogTail.recent();
+                // The only query that takes arguments. Kept as optional fields on the
+                // same envelope rather than a second message type, since "ask for a
+                // collection" is one idea whichever way it is narrowed.
+                case "history" -> state.history(
+                        message.has("uuid") && !message.get("uuid").isJsonNull()
+                                ? message.get("uuid").getAsString() : null,
+                        message.has("limit") ? message.get("limit").getAsInt() : 50);
                 default -> null;
             };
 

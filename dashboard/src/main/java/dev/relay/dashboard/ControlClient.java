@@ -202,6 +202,15 @@ final class ControlClient implements AutoCloseable {
      *         than an exception page
      */
     JsonElement query(String what) {
+        return query(what, null);
+    }
+
+    /**
+     * @param narrow extra fields for the query, or null. Only {@code history} uses this
+     *               today; it is a parameter rather than a second method so a future
+     *               query with arguments does not need one either
+     */
+    JsonElement query(String what, JsonObject narrow) {
         if (!connected) {
             return com.google.gson.JsonNull.INSTANCE;
         }
@@ -213,6 +222,11 @@ final class ControlClient implements AutoCloseable {
         request.addProperty("type", "query");
         request.addProperty("id", id);
         request.addProperty("what", what);
+        if (narrow != null) {
+            for (var entry : narrow.entrySet()) {
+                request.add(entry.getKey(), entry.getValue());
+            }
+        }
         try {
             send(request);
             return future.get(QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);

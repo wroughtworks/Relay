@@ -3,6 +3,7 @@ package dev.relay.control;
 import dev.relay.health.BackendHealth;
 import dev.relay.health.BackendStats;
 import dev.relay.metrics.Metrics;
+import dev.relay.store.History;
 import dev.relay.proxy.ConnectedPlayer;
 import dev.relay.proxy.NetworkRoute;
 import dev.relay.proxy.RegisteredServer;
@@ -128,6 +129,18 @@ public final class ControlState {
      */
     public Metrics.Snapshot metrics() {
         return proxy.metrics().snapshot();
+    }
+
+    /**
+     * Recent sessions from storage, newest first.
+     *
+     * <p>Empty rather than an error when storage is off, for the same reason the other
+     * collections are: a companion that has to handle both "nothing recorded" and "an
+     * error object where a list belongs" will get one of them wrong.
+     */
+    public List<History.Session> history(String uuid, int limit) {
+        History history = proxy.history();
+        return history == null ? List.of() : history.sessions(uuid, limit);
     }
 
     public List<ServerView> servers() {

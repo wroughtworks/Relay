@@ -120,8 +120,7 @@ class ControlServerTest {
             proxy.players().add(player);
             proxy.events().playerConnected(player, proxy.server("survival-01").orElseThrow());
 
-            JsonObject event = companion.readJson();
-            assertEquals("event", event.get("type").getAsString());
+            JsonObject event = companion.readJsonOfType("event");
             assertEquals("PLAYER_CONNECTED", event.get("kind").getAsString());
             assertEquals("Tester", event.getAsJsonObject("player").get("username").getAsString());
             assertEquals("survival-01", event.get("to").getAsString());
@@ -250,6 +249,25 @@ class ControlServerTest {
                 throw new AssertionError("the control connection closed when a message was expected");
             }
             return JsonParser.parseString(line).getAsJsonObject();
+        }
+
+        /**
+         * Reads until a message of this type arrives, skipping the rest.
+         *
+         * <p>Log lines share this channel and arrive whenever the proxy happens to log,
+         * so a test that reads exactly one line is asserting on whatever the proxy said
+         * most recently. That is how this test started failing the day storage added one
+         * more line to startup -- the assertion was fine, the reading was not. A real
+         * companion has always had to do this.
+         */
+        JsonObject readJsonOfType(String type) throws IOException {
+            for (int i = 0; i < 200; i++) {
+                JsonObject message = readJson();
+                if (type.equals(message.get("type").getAsString())) {
+                    return message;
+                }
+            }
+            throw new AssertionError("no '" + type + "' message arrived in 200 lines");
         }
 
         String readLine() throws IOException {

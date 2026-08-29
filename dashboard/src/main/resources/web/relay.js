@@ -209,10 +209,75 @@ function paintTopology() {
     id => select({ kind: "node", id }), picked);
 }
 
+/**
+ * Past sessions for the traced player (§9.1 connection history).
+ *
+ * <p>Fetched rather than pushed, and only for the player being looked at: the history
+ * of everyone who has ever connected is a table nobody reads, while "where has this
+ * person been" is the question the trace panel is already asking.
+ */
+async function paintHistory(uuid, routeId) {
+  const host = $("past");
+  host.replaceChildren();
+  if (!uuid) return;
+
+  let sessions;
+  try {
+    sessions = await fetch("api/history?limit=6&uuid=" + encodeURIComponent(uuid))
+      .then(r => r.json());
+  } catch (e) {
+    return;                       // storage may be off; the live route still stands
+  }
+  // The selection may have moved on while this was in flight.
+  const current = selectedPlayer();
+  if (!current || current.routeId !== routeId) return;
+
+  const earlier = sessions.filter(s => s.routeId !== routeId);
+  if (!earlier.length) return;
+
+  const title = document.createElement("h4");
+  title.textContent = "Earlier visits";
+  host.appendChild(title);
+
+  for (const session of earlier) {
+    const div = document.createElement("div");
+    div.className = "sess";
+    const when = document.createElement("div");
+    when.className = "when";
+    const ended = session.disconnectedAt;
+    when.textContent = new Date(session.connectedAt).toLocaleString()
+      + (ended ? " · " + duration(Math.round((ended - session.connectedAt) / 1000)) : " · ongoing");
+    div.appendChild(when);
+
+    const path = document.createElement("div");
+    path.className = "path";
+    session.visits.forEach((visit, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "sep";
+        sep.textContent = "→";
+        path.appendChild(sep);
+      }
+      const stop = document.createElement("span");
+      stop.className = "stop";
+      stop.textContent = visit.server;
+      if (visit.leftAt) {
+        const held = document.createElement("em");
+        held.textContent = duration(Math.round((visit.leftAt - visit.joinedAt) / 1000));
+        stop.appendChild(held);
+      }
+      path.appendChild(stop);
+    });
+    div.appendChild(path);
+    host.appendChild(div);
+  }
+}
+
 function paintTrace() {
   const panel = $("trace");
   const player = selectedPlayer();
 
+  $("past").replaceChildren();
   if (selection && selection.kind === "node") {
     const name = selection.id.slice(selection.id.indexOf(":") + 1);
     const on = data.players.filter(p => routesThrough(p, selection.id)).length;
@@ -268,6 +333,8 @@ function paintTrace() {
     none.textContent = "connecting — no route yet";
     $("hops").replaceChildren(none);
   }
+
+  paintHistory(player.uuid, player.routeId);
 }
 
 function paintServers() {

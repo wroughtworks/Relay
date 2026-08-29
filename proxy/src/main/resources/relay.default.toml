@@ -214,6 +214,32 @@ balance = "least-players"
 # will fail a single check against a perfectly healthy server, and reacting to
 # that would empty it. Recovery is immediate in the other direction.
 
+# ------------------------------------------------------------------ storage
+#
+# A SQLite file beside this one, holding what happened rather than how things
+# are configured: player sessions and the backends they visited, backend health
+# changes, and the metric samples the dashboard charts. Configuration stays here
+# in TOML and is never duplicated into the database.
+#
+# The proxy owns this file rather than the dashboard. History has to be recorded
+# whether or not anyone is watching, and the things that will live here later --
+# bans, whitelist -- have to be answerable during a login, when a companion may
+# be down or absent.
+#
+# Writes go through one background thread and are dropped rather than queued
+# without limit if the disk falls behind, so storage can never slow a player's
+# connection. Turning it off loses history and nothing else.
+
+[storage]
+enabled = true
+file = "relay.db"
+
+# How long rows are kept. Sessions, health changes, metric samples and audit
+# events older than this are deleted hourly. 0 keeps everything forever, which
+# is a decision about disk rather than about Relay.
+retain-days = 14
+
+
 [health]
 enabled = true
 interval = 10000
