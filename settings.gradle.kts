@@ -45,6 +45,10 @@ dependencyResolutionManagement {
 
             library("paper-api", "io.papermc.paper", "paper-api").versionRef("paper")
 
+            // Bytecode reading, for the architecture rules in proxy's tests. Test-only:
+            // nothing Relay ships manipulates bytecode.
+            library("asm", "org.ow2.asm", "asm").version("9.7.1")
+
             library("junit-bom", "org.junit", "junit-bom").version("5.11.3")
             library("junit-jupiter", "org.junit.jupiter", "junit-jupiter").withoutVersion()
             library("junit-platform-launcher", "org.junit.platform", "junit-platform-launcher").withoutVersion()
