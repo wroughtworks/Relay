@@ -12,6 +12,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
 import io.netty.handler.codec.haproxy.HAProxyMessageEncoder;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 
 import java.util.concurrent.TimeUnit;
@@ -42,7 +43,7 @@ public final class ConnectionInitializer {
     public static MinecraftConnection initialize(Channel channel, PacketDirection inbound, int readTimeoutMillis,
                                                  boolean acceptProxyProtocol, boolean sendProxyProtocol) {
         return initialize(channel, inbound, readTimeoutMillis, acceptProxyProtocol, sendProxyProtocol,
-                null, null);
+                null, null, false);
     }
 
     /**
@@ -54,7 +55,8 @@ public final class ConnectionInitializer {
      */
     public static MinecraftConnection initialize(Channel channel, PacketDirection inbound, int readTimeoutMillis,
                                                  boolean acceptProxyProtocol, boolean sendProxyProtocol,
-                                                 String traceDescription, Metrics metrics) {
+                                                 String traceDescription, Metrics metrics,
+                                                 boolean flushBatching) {
         MinecraftDecoder decoder = new MinecraftDecoder(inbound);
         MinecraftEncoder encoder = new MinecraftEncoder(inbound.opposite());
 
@@ -92,6 +94,9 @@ public final class ConnectionInitializer {
             // emits is not wrapped in a length prefix by the frame encoder, and lands on
             // the wire exactly as the peer expects to read it.
             pipeline.addFirst(Pipeline.PROXY_PROTOCOL_ENCODER, HAProxyMessageEncoder.INSTANCE);
+        }
+        if (flushBatching) {
+            pipeline.addFirst(Pipeline.FLUSH_CONSOLIDATION, new FlushConsolidationHandler(256, true));
         }
         if (metrics != null) {
             // Added last, so it ends up at the very head and stays there: it must see the

@@ -75,6 +75,11 @@ public final class Throughput {
         // middle. That is the harness's own ceiling, and the only way to know whether a
         // number measures Relay or measures this file.
         boolean direct = List.of(args).contains("--direct");
+        // Virtual threads, so thousands of blocking clients cost what thousands of
+        // connections cost rather than what thousands of OS threads cost. A proxy for a
+        // large network carries thousands per node; sixteen says nothing about that.
+        boolean virtual = List.of(args).contains("--virtual");
+        boolean flushBatching = List.of(args).contains("--flush-batching");
 
         System.out.printf("Relay throughput: %d client(s), %d-byte frames, %ds warmup, %ds measured%n",
                 clients, frameBytes, warmupSeconds, measureSeconds);
@@ -84,13 +89,13 @@ public final class Throughput {
         Path dir = Files.createTempDirectory("relay-bench");
         int backendPort = freePort();
         int proxyPort = freePort();
-        writeConfig(dir, proxyPort, backendPort);
+        writeConfig(dir, proxyPort, backendPort, flushBatching);
 
         AtomicBoolean running = new AtomicBoolean(true);
         LongAdder bytesRead = new LongAdder();
         LongAdder framesRead = new LongAdder();
 
-        Backend backend = new Backend(backendPort, frameBytes, running);
+        Backend backend = new Backend(backendPort, frameBytes, running, virtual);
         backend.start();
 
         RelayProxy proxy = null;
@@ -105,9 +110,15 @@ public final class Throughput {
         List<Client> readers = new ArrayList<>();
         CountDownLatch ready = new CountDownLatch(clients);
         for (int i = 0; i < clients; i++) {
-            Client client = new Client(connectPort, "Bench" + i, running, bytesRead, framesRead, ready);
+            Client client = new Client(connectPort, "Bench" + i, running, bytesRead, framesRead,
+                    ready, virtual);
             client.start();
             readers.add(client);
+            // A thousand simultaneous connects overruns any accept queue. Real players
+            // do not arrive in the same microsecond either.
+            if (clients > 64 && i % 32 == 31) {
+                Thread.sleep(20);
+            }
         }
         if (!ready.await(30, TimeUnit.SECONDS)) {
             System.out.println("Clients did not all reach play state; aborting.");
@@ -175,22 +186,25 @@ public final class Throughput {
      * them is a thread doing periodic work, and the point of this is to measure the path a
      * packet takes, not the background.
      */
-    private static void writeConfig(Path dir, int proxyPort, int backendPort) throws IOException {
+    private static void writeConfig(Path dir, int proxyPort, int backendPort,
+                                    boolean flushBatching) throws IOException {
         Files.writeString(dir.resolve("relay.toml"), """
                 bind = "127.0.0.1:%d"
                 motd = "bench"
                 online-mode = false
                 forwarding-mode = "none"
                 compression-threshold = -1
+                max-players = 20000
                 health.enabled = false
                 control.enabled = false
                 storage.enabled = false
                 trace-closes = false
+                flush-batching = %s
                 try = ["bench"]
 
                 [servers]
                 bench = "127.0.0.1:%d"
-                """.formatted(proxyPort, backendPort));
+                """.formatted(proxyPort, flushBatching, backendPort));
     }
 
     // ------------------------------------------------------------------- the backend
@@ -201,10 +215,14 @@ public final class Throughput {
         private final ServerSocket socket;
         private final int frameBytes;
         private final AtomicBoolean running;
+        private final boolean virtual;
 
-        Backend(int port, int frameBytes, AtomicBoolean running) throws IOException {
+        Backend(int port, int frameBytes, AtomicBoolean running, boolean virtual) throws IOException {
+            this.virtual = virtual;
             this.socket = new ServerSocket();
-            this.socket.bind(new InetSocketAddress("127.0.0.1", port));
+            // A thousand clients connect at once. The default backlog is 50, and the
+            // rest are refused before anything is measured.
+            this.socket.bind(new InetSocketAddress("127.0.0.1", port), 8192);
             this.frameBytes = frameBytes;
             this.running = running;
         }
@@ -215,9 +233,13 @@ public final class Throughput {
                     try {
                         Socket connection = socket.accept();
                         connection.setTcpNoDelay(true);
-                        Thread serve = new Thread(() -> serve(connection), "bench-backend-serve");
-                        serve.setDaemon(true);
-                        serve.start();
+                        if (virtual) {
+                            Thread.ofVirtual().start(() -> serve(connection));
+                        } else {
+                            Thread serve = new Thread(() -> serve(connection), "bench-backend-serve");
+                            serve.setDaemon(true);
+                            serve.start();
+                        }
                     } catch (IOException stopping) {
                         return;
                     }
@@ -288,19 +310,25 @@ public final class Throughput {
         private final LongAdder bytes;
         private final LongAdder frames;
         private final CountDownLatch ready;
+        private final boolean virtual;
         private volatile Socket socket;
 
         Client(int port, String username, AtomicBoolean running,
-               LongAdder bytes, LongAdder frames, CountDownLatch ready) {
+               LongAdder bytes, LongAdder frames, CountDownLatch ready, boolean virtual) {
             this.port = port;
             this.username = username;
             this.running = running;
             this.bytes = bytes;
             this.frames = frames;
             this.ready = ready;
+            this.virtual = virtual;
         }
 
         void start() {
+            if (virtual) {
+                Thread.ofVirtual().name("bench-client-" + username).start(this::run);
+                return;
+            }
             Thread thread = new Thread(this::run, "bench-client-" + username);
             thread.setDaemon(true);
             thread.start();

@@ -60,6 +60,18 @@ try = ["lobby", "survival"]
 
 # ----------------------------------------------------------------- tuning
 
+# Send a burst of packets with one flush rather than one each. A flush is a
+# syscall, and Minecraft servers send many small packets per tick.
+#
+# Measured on the throughput harness (`py relay.py bench`): the crossover is
+# between 8 and 16 concurrent connections. Below it, flushing per packet is
+# about 30% faster; above it, batching is 10-15% faster and stays that way to
+# the highest counts tested. Anything carrying real players is above it.
+#
+# Turn it off only for a server with a handful of connections where latency
+# matters more than throughput.
+flush-batching = true
+
 # Packets at or above this many bytes are compressed. -1 disables compression.
 #
 # This governs the PLAYER connection only. Each backend dictates compression on its

@@ -223,6 +223,8 @@ public final class FakePlayers {
             disconnected.set(true);
             System.out.println("Disconnecting.");
             players.forEach(FakePlayer::close);
+            System.out.printf("Received %.1f MB in %d frames.%n",
+                    WIRE_BYTES.sum() / 1e6, WIRE_FRAMES.sum());
             return;
         }
 
@@ -589,6 +591,12 @@ public final class FakePlayers {
         }
     }
 
+    /** Bytes and frames every fake player has received, for benchmarking. */
+    private static final java.util.concurrent.atomic.LongAdder WIRE_BYTES =
+            new java.util.concurrent.atomic.LongAdder();
+    private static final java.util.concurrent.atomic.LongAdder WIRE_FRAMES =
+            new java.util.concurrent.atomic.LongAdder();
+
     /** Reasons already printed, so forty identical failures produce one line. */
     private static final java.util.Set<String> REPORTED = new java.util.HashSet<>();
 
@@ -658,6 +666,11 @@ public final class FakePlayers {
             int length = readVarInt();
             byte[] payload = new byte[length];
             in.readFully(payload);
+            // Counted so a run can say how much the proxy actually moved. Without a
+            // denominator, "the proxy used 40 seconds of CPU" is not a measurement of
+            // anything -- Paper decides how much traffic there is, and it varies.
+            WIRE_BYTES.add(length);
+            WIRE_FRAMES.increment();
             if (threshold < 0) {
                 return Unpooled.wrappedBuffer(payload);
             }

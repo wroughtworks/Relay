@@ -40,6 +40,7 @@ public record RelayConfig(
         int healthIntervalMillis,
         int healthTimeoutMillis,
         int healthFailuresBeforeDown,
+        boolean flushBatching,
         boolean storageEnabled,
         String storageFile,
         int storageRetainDays,
