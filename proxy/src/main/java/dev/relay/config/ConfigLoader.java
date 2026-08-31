@@ -135,7 +135,12 @@ public final class ConfigLoader {
         byte[] forwardingSecret = readForwardingSecret(config, forwardingMode, path);
 
         int compressionThreshold = config.getIntOrElse("compression-threshold", 256);
-        int compressionLevel = config.getIntOrElse("compression-level", -1);
+        // 3, not zlib's default of 6. Measured against real Paper backends with 40
+        // players: level 6 costs 177us of proxy CPU per frame, level 3 costs 101us, and
+        // level 3 sends about 9% more bytes for it. A proxy runs out of CPU long before
+        // it runs out of loopback, and the level never appears on the wire -- any zlib
+        // decoder reads any level -- so this is free to change.
+        int compressionLevel = config.getIntOrElse("compression-level", 3);
         if (compressionLevel < -1 || compressionLevel > 9) {
             throw new IllegalArgumentException("compression-level must be between -1 and 9, got " + compressionLevel);
         }
