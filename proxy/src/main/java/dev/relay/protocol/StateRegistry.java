@@ -304,7 +304,7 @@ public final class StateRegistry {
                         VersionRegistry registry = versions.get(version);
                         registry.classToId.put(type, mapping.id());
                         if (decodable) {
-                            registry.idToFactory.put(mapping.id(), factory);
+                            registry.put(mapping.id(), factory);
                         }
                     }
                 }
@@ -320,16 +320,25 @@ public final class StateRegistry {
             VersionRegistry registry = versions.get(version);
             Integer oldId = registry.classToId.put(type, id);
             if (oldId != null) {
-                Supplier<? extends Packet> factory = registry.idToFactory.remove(oldId);
+                Supplier<? extends Packet> factory = registry.factory(oldId);
                 if (factory != null) {
-                    registry.idToFactory.put(id, factory);
+                    registry.put(oldId, null);
+                    registry.put(id, factory);
                 }
             }
         }
 
-        /** @return a fresh packet instance, or {@code null} if this id is not registered */
+        /**
+         * @return a fresh packet instance, or {@code null} if this id is not registered
+         *
+         * <p>On the hot path, and null is the common answer: the bulk of play traffic is
+         * relayed opaquely, so every forwarded frame asks this and is told there is
+         * nothing to decode. That made the lookup worth an array rather than a map --
+         * a {@code Map<Integer, ...>} boxes the id and hashes it, per packet, to return
+         * null.
+         */
         public Packet create(int id, ProtocolVersion version) {
-            Supplier<? extends Packet> factory = versions.get(version).idToFactory.get(id);
+            Supplier<? extends Packet> factory = versions.get(version).factory(id);
             return factory == null ? null : factory.get();
         }
 
@@ -346,8 +355,44 @@ public final class StateRegistry {
         }
     }
 
+    /**
+     * One version's tables.
+     *
+     * <p>Decoding is an array indexed by packet id; encoding stays a map keyed by class.
+     * The asymmetry follows the traffic. Decoding is asked about every frame that crosses
+     * the proxy, most of which Relay has no definition for, so the answer has to be cheap
+     * to reach and cheap to be null. Encoding is only ever asked about the handful of
+     * packets Relay writes itself.
+     *
+     * <p>Ids arrive off the wire as VarInts and can be anything, so every read is bounds
+     * checked -- a hostile id is a null answer, exactly like an unknown one.
+     */
     private static final class VersionRegistry {
-        private final Map<Integer, Supplier<? extends Packet>> idToFactory = new HashMap<>();
+
+        private static final Supplier<? extends Packet>[] EMPTY = newArray(0);
+
+        private Supplier<? extends Packet>[] idToFactory = EMPTY;
         private final Map<Class<? extends Packet>, Integer> classToId = new HashMap<>();
+
+        Supplier<? extends Packet> factory(int id) {
+            return id >= 0 && id < idToFactory.length ? idToFactory[id] : null;
+        }
+
+        void put(int id, Supplier<? extends Packet> factory) {
+            if (id < 0) {
+                throw new IllegalArgumentException("Negative packet id " + id);
+            }
+            if (id >= idToFactory.length) {
+                Supplier<? extends Packet>[] grown = newArray(id + 1);
+                System.arraycopy(idToFactory, 0, grown, 0, idToFactory.length);
+                idToFactory = grown;
+            }
+            idToFactory[id] = factory;
+        }
+
+        @SuppressWarnings("unchecked")
+        private static Supplier<? extends Packet>[] newArray(int size) {
+            return (Supplier<? extends Packet>[]) new Supplier<?>[size];
+        }
     }
 }

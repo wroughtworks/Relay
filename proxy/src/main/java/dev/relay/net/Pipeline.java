@@ -23,6 +23,12 @@ public final class Pipeline {
     public static final String CLOSE_TRACER = "close-tracer";
 
     /**
+     * Batches flushes so a burst of packets costs one syscall rather than one each.
+     * At the very head, where it can intercept every flush before it reaches the socket.
+     */
+    public static final String FLUSH_CONSOLIDATION = "flush-consolidation";
+
+    /**
      * Wire-byte counter. At the head, so it sees bytes as they are on the network --
      * compressed and encrypted -- rather than as Relay thinks of them.
      */

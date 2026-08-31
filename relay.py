@@ -1769,6 +1769,47 @@ def dashboard_servers() -> list[dict] | None:
         return None
 
 
+def cmd_bench(args) -> int:
+    """
+    Runs the throughput harness, several times, and reports the spread.
+
+    One run is noise: the spread between runs on this machine is a few percent, so a
+    change smaller than that has not been measured no matter how good the reasoning
+    behind it. Always compare against `--direct`, which is the harness's own ceiling --
+    a number at the ceiling is measuring this script, not the proxy.
+    """
+    jar = jar_path()
+    if jar is None or jar_is_stale():
+        print(Style.yellow("Building first."))
+        if run_gradle([":proxy:build"]) != 0:
+            return 1
+        jar = jar_path()
+
+    command = ["java", "-cp", str(jar), "dev.relay.tools.Throughput",
+               "--clients", str(args.clients), "--frame", str(args.frame),
+               "--seconds", str(args.seconds), "--warmup", str(args.warmup)]
+    if args.direct:
+        command.append("--direct")
+
+    print(Style.dim("$ " + " ".join(command)))
+    results = []
+    for run in range(args.runs):
+        output = subprocess.run(command, cwd=str(PROJECT), capture_output=True, text=True).stdout
+        for line in output.splitlines():
+            if "frames" in line and "k/s" in line:
+                value = float(line.split()[1].replace("k/s", ""))
+                results.append(value)
+                print(f"  run {run + 1}: {value:.1f}k frames/s")
+    if not results:
+        print(Style.red("No result; the harness did not report."))
+        return 1
+    results.sort()
+    print()
+    print(f"  median {results[len(results) // 2]:.1f}k frames/s"
+          f"   (low {results[0]:.1f}, high {results[-1]:.1f})")
+    return 0
+
+
 def cmd_dashboard_user(args) -> int:
     """
     Runs the dashboard's own account tool, which prompts for the password itself.
@@ -2234,6 +2275,17 @@ other:
     user.add_argument("role", nargs="?", default="admin",
                       help="viewer, moderator or admin (default admin)")
     user.set_defaults(func=cmd_dashboard_user)
+
+    bench = sub.add_parser("bench", help="measure forwarding throughput")
+    bench.add_argument("--clients", type=int, default=16,
+                       help="concurrent connections (default 16; 4 is too few to load the proxy)")
+    bench.add_argument("--frame", type=int, default=256, help="frame size in bytes")
+    bench.add_argument("--seconds", type=int, default=10, help="measured window")
+    bench.add_argument("--warmup", type=int, default=4)
+    bench.add_argument("--direct", action="store_true",
+                       help="bypass the proxy, to see the harness's own ceiling")
+    bench.add_argument("--runs", type=int, default=3, help="repeat, since one run is noise")
+    bench.set_defaults(func=cmd_bench)
 
     paper = sub.add_parser("paper-debug", help="write Paper's debug log4j2 config")
     paper.add_argument("name")
