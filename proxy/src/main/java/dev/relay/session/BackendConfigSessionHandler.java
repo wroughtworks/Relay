@@ -109,7 +109,11 @@ public final class BackendConfigSessionHandler implements SessionHandler {
                     frame.readableBytes(), clientReady ? "" : " [queued]");
         }
         if (clientReady && client.isActive()) {
-            client.relay(msg);
+            // Registry data is tens of kilobytes and arrives on every join and every
+            // switch, so it is worth not deflating twice. Only on the direct path: a
+            // queued frame outlives the decode that produced it, and relayFrom's identity
+            // check would refuse it anyway, which is the check doing its job.
+            client.relayFrom(attempt.connection(), msg);
             return;
         }
         if (!pending.offer(msg)) {

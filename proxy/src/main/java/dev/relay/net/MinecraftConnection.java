@@ -5,6 +5,7 @@ import dev.relay.net.pipeline.CipherEncoder;
 import dev.relay.net.pipeline.CompressionDecoder;
 import dev.relay.net.pipeline.CompressionEncoder;
 import dev.relay.net.pipeline.MinecraftDecoder;
+import dev.relay.net.pipeline.Precompressed;
 import dev.relay.net.pipeline.MinecraftEncoder;
 import dev.relay.protocol.Packet;
 import dev.relay.protocol.PacketDirection;
@@ -214,6 +215,52 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
      */
     public void relay(Object msg) {
         write(ReferenceCountUtil.retain(msg));
+    }
+
+    /**
+     * Relays a frame, reusing the sender's compression work when this connection can.
+     *
+     * <p>A frame arriving from a backend was inflated so Relay could read its packet id.
+     * Deflating it again to send it on is the single most expensive thing this proxy does
+     * -- about ten times the cost of the inflate -- and produces different bytes that mean
+     * the same thing. When the two connections agree closely enough on compression, the
+     * original can go out untouched.
+     *
+     * <h2>When that is allowed</h2>
+     * This connection's threshold must be <em>at or below</em> the source's. A client
+     * rejects a frame whose declared uncompressed size is under the threshold it
+     * negotiated, and the source only compressed frames at or above its own; so a lower
+     * threshold here accepts everything the source produced, and a higher one would not.
+     * Equal thresholds are the common case and satisfy it.
+     *
+     * <p>Uncompressed frames pass through under the same rule and are always safe: the
+     * zero marker means "not compressed" and carries no size to check.
+     *
+     * @param source the connection the frame was read from
+     */
+    public void relayFrom(MinecraftConnection source, Object msg) {
+        if (msg instanceof ByteBuf frame && source != null) {
+            CompressionDecoder theirs = source.compressionDecoder();
+            CompressionEncoder mine = compressionEncoder();
+            if (theirs != null && mine != null && mine.threshold() <= theirs.threshold()) {
+                ByteBuf original = theirs.takeOriginalFor(frame);
+                if (original != null) {
+                    // Ownership of `original` passes to the write; the inflated frame is
+                    // still owned by the caller and released by them as usual.
+                    write(new Precompressed(original));
+                    return;
+                }
+            }
+        }
+        relay(msg);
+    }
+
+    private CompressionDecoder compressionDecoder() {
+        return channel.pipeline().get(CompressionDecoder.class);
+    }
+
+    private CompressionEncoder compressionEncoder() {
+        return channel.pipeline().get(CompressionEncoder.class);
     }
 
     public void flush() {
