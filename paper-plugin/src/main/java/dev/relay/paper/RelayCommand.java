@@ -20,14 +20,23 @@ final class RelayCommand implements CommandExecutor, TabCompleter {
 
     private final RelayPlugin plugin;
     private final BackendApiProbe probe;
+    private final PacketProbe packets;
 
-    RelayCommand(RelayPlugin plugin, BackendApiProbe probe) {
+    RelayCommand(RelayPlugin plugin, BackendApiProbe probe, PacketProbe packets) {
         this.plugin = plugin;
         this.probe = probe;
+        this.packets = packets;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        // "packet" is deliberately allowed from the console. The others put the sender's
+        // own connection on the wire, so they need a player; a packet factory picks its
+        // own carrier, which means this one can be driven over RCON -- and being able to
+        // test cross-server messaging without logging in is most of its value.
+        if (args.length > 0 && args[0].equalsIgnoreCase("packet")) {
+            return packet(sender, args);
+        }
         if (!(sender instanceof Player player)) {
             sender.sendMessage("This command needs a player: every API request travels on a "
                     + "player's connection.");
@@ -37,6 +46,7 @@ final class RelayCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("/" + label + " probe            re-run the read-only checks");
             sender.sendMessage("/" + label + " connect <server> move yourself via the proxy");
             sender.sendMessage("/" + label + " forward <text>   send text to every other server");
+            sender.sendMessage("/" + label + " packet <server> [note]  typed round trip to a backend");
             return true;
         }
 
@@ -70,8 +80,27 @@ final class RelayCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean packet(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage("Which server? Both ends need the Relay plugin.");
+            return true;
+        }
+        packets.ping(args[1], args.length > 2
+                ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length))
+                : sender.getName());
+        sender.sendMessage("Ping sent; the round trip is reported in both consoles.");
+        return true;
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String label, String[] args) {
-        return args.length == 1 ? List.of("probe", "connect", "forward") : List.of();
+        if (args.length == 1) {
+            return List.of("probe", "connect", "forward", "packet");
+        }
+        // Both "connect" and "packet" want somewhere to send to, and the proxy has
+        // already told this server what those are.
+        boolean wantsDestination = args.length == 2
+                && (args[0].equalsIgnoreCase("connect") || args[0].equalsIgnoreCase("packet"));
+        return wantsDestination ? probe.knownServers() : List.of();
     }
 }

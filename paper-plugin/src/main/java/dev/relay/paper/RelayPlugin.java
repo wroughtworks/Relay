@@ -23,6 +23,7 @@ public final class RelayPlugin extends JavaPlugin implements Reporter {
 
     private ConnectionInspector inspector;
     private BackendApiProbe probe;
+    private PacketProbe packetProbe;
     private StatsReporter statsReporter;
 
     @Override
@@ -33,10 +34,13 @@ public final class RelayPlugin extends JavaPlugin implements Reporter {
         inspector = new ConnectionInspector(this, logPackets);
         probe = new BackendApiProbe(this);
         probe.register();
+        // A factory of its own, so /relay packet proves the cross-server path the same
+        // way /relay probe proves the backend API. It is also the worked example.
+        packetProbe = new PacketProbe(this);
 
         getServer().getPluginManager().registerEvents(
                 new DisconnectListener(this, inspector, probe, getConfig().getBoolean("probe-on-join", true)), this);
-        getCommand("relay").setExecutor(new RelayCommand(this, probe));
+        getCommand("relay").setExecutor(new RelayCommand(this, probe, packetProbe));
 
         // The proxy's own commands, forwarded verbatim. Registering them here is what
         // gives them tab completion and a place in the client's command tree; chat

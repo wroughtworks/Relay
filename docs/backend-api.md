@@ -118,7 +118,11 @@ in its config turns it off.
 | `ForwardToPlayer` | player, subchannel, length *(short)*, payload |
 
 The receiving server gets a plugin message on the same channel whose first field is your
-chosen sub-channel name. This only reaches servers that currently have a player on them —
+chosen sub-channel name. This is the raw primitive; for typed packets with ids and a
+registry both ends are checked against, see [server-packets.md](server-packets.md), which
+is built on exactly these two messages.
+
+This only reaches servers that currently have a player on them —
 a plugin message needs a player connection to travel on. BungeeCord has the same
 limitation; Relay logs at debug when a forward had nowhere to go, which is worth knowing
 because it otherwise looks like a dropped message.

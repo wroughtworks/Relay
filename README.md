@@ -50,6 +50,10 @@ commands that reach the proxy by plugin message. See
   already on it — Relay announces the moment it empties
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
+- **Server-to-server packets**: typed messages between backends, with ids assigned by a
+  shared factory and a fingerprint that refuses a registry the other side does not agree
+  with, rather than decoding one packet as another —
+  see [docs/server-packets.md](docs/server-packets.md)
 - **Client API**: a plugin-message protocol for client-side mods —
   see [docs/client-api.md](docs/client-api.md)
 - **Operations**: backpressure both directions, bounded buffers, graceful shutdown, and
