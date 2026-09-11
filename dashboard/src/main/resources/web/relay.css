@@ -60,6 +60,15 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
      display: flex; align-items: baseline; gap: 10px; }
 h2 .note { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
 
+/* Paging, which appears only when the list has more than one page. The proxy does the
+   narrowing now, so these move a window rather than scrolling an array already here. */
+.pager { margin-left: auto; display: flex; gap: 6px; }
+.pager button { font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0;
+                cursor: pointer; color: var(--muted); background: none;
+                border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; }
+.pager button:hover:not(:disabled) { color: var(--text); }
+.pager button:disabled { opacity: 0.35; cursor: default; }
+
 .scroll { overflow-x: auto; background: var(--panel);
           border: 1px solid var(--line); border-radius: 10px; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }

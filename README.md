@@ -295,8 +295,15 @@ dashboard that needs a CDN to render fails exactly when someone is diagnosing an
 | `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
 | `GET /api/servers` | each backend: address, group, health, latency, version, its own player count, and a `load` object with TPS, MSPT, heap and CPU |
 | `GET /api/groups` | each group, its members, and its total |
-| `GET /api/players` | who is online, which backend they are on, and their full network route |
+| `GET /api/players` | one page of who is online, each with the backend they are on and their full network route. Takes `q`, `server`, `offset` and `limit`; answers `{total, matched, offset, limit, players, edges}` |
 | `WS /api/events` | one socket carrying every event type |
+
+The player list is a page, and the narrowing happens in the proxy. Sending everyone and
+filtering in the browser was fine for a test network and is not survivable on a real one:
+it is the whole player list, every row carrying a freshly walked route, rebuilt every few
+seconds for every open tab. The proxy walks everyone once per request, keeps only the
+rows it is about to send, and totals the upstream edges on the way past so the topology
+map still says something true about a network it is no longer being shown all of.
 
 Events arrive as `{type, player, from, to}`, with `type` one of `PLAYER_CONNECTED`,
 `PLAYER_DISCONNECTED`, `PLAYER_SWITCHED_SERVER`, `SERVER_HEALTH_CHANGED`. One socket

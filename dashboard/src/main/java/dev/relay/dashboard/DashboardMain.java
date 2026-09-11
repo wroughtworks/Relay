@@ -62,6 +62,10 @@ public final class DashboardMain {
      */
     private static final long CACHE_MILLIS = 500;
 
+    /** The right shape with nothing in it, for when the proxy cannot be reached. */
+    private static final String EMPTY_PAGE =
+            "{\"total\":0,\"matched\":0,\"offset\":0,\"limit\":0,\"players\":[],\"edges\":[]}";
+
     private final Gson gson = new GsonBuilder().serializeNulls().create();
     private final Set<WsContext> browsers = ConcurrentHashMap.newKeySet();
     private final Map<String, Cached> cache = new ConcurrentHashMap<>();
@@ -146,9 +150,28 @@ public final class DashboardMain {
         // not this process's: the dashboard renders what Relay reports and invents nothing.
         server.get("/api/health", ctx -> ctx.json(Map.of(
                 "status", control.isConnected() ? "ok" : "disconnected")));
-        for (String what : new String[] {"overview", "servers", "groups", "players", "metrics", "log"}) {
+        for (String what : new String[] {"overview", "servers", "groups", "metrics", "log"}) {
             server.get("/api/" + what, ctx -> ctx.contentType("application/json").result(ask(what)));
         }
+
+        // The player list is a page, narrowed by the proxy rather than by the browser.
+        // Sending everyone and filtering in JavaScript was fine for a test network and
+        // is not survivable on a real one: it is the whole player list, each row
+        // carrying a freshly walked route, rebuilt every five seconds per open tab.
+        //
+        // Uncached for the same reason /api/history is -- the answer depends on the
+        // arguments, and one cache slot per endpoint would serve one tab's filter to
+        // the next tab. Paging is what made that affordable.
+        server.get("/api/players", ctx -> {
+            JsonObject narrow = new JsonObject();
+            narrow.addProperty("q", ctx.queryParam("q"));
+            narrow.addProperty("server", ctx.queryParam("server"));
+            narrow.addProperty("offset", parseOffset(ctx.queryParam("offset")));
+            narrow.addProperty("limit", parseLimit(ctx.queryParam("limit")));
+            JsonElement data = control.query("players", narrow);
+            ctx.contentType("application/json")
+                    .result(data == null || data.isJsonNull() ? EMPTY_PAGE : gson.toJson(data));
+        });
 
         // History takes arguments, so it is not part of the cached pass-through above:
         // caching one player's sessions under the key "history" would answer the next
@@ -191,6 +214,14 @@ public final class DashboardMain {
             return Math.max(1, Math.min(Integer.parseInt(raw), 200));
         } catch (RuntimeException notANumber) {
             return 50;
+        }
+    }
+
+    private static int parseOffset(String raw) {
+        try {
+            return Math.max(0, Integer.parseInt(raw));
+        } catch (RuntimeException notANumber) {
+            return 0;
         }
     }
 

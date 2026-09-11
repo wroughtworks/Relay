@@ -11,8 +11,14 @@ import dev.relay.proxy.RelayProxy;
 import dev.relay.proxy.ServerConnection;
 import dev.relay.proxy.ServerGroup;
 
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 /**
  * The proxy's live state, flattened into things that can cross a process boundary.
@@ -106,6 +112,31 @@ public final class ControlState {
     public record HopView(String kind, String name, String detail) {
     }
 
+    /**
+     * One page of the player list, with the two counts needed to make sense of it.
+     *
+     * <p>A page rather than a list because the whole list stops being a sensible answer
+     * somewhere in the low thousands. Every {@link PlayerView} carries a freshly walked
+     * route, and a hundred thousand of them is several hundred megabytes of objects and
+     * JSON built, sent and thrown away every few seconds &mdash; on the proxy's own event
+     * loops, to render a table nobody can read.
+     *
+     * @param total   everyone online, so a filtered page can say what it is a slice of
+     * @param matched how many passed the filter, which is not {@code players.size()} and
+     *                is the number paging controls need
+     * @param edges   upstream proxies seen across <em>everyone</em>, not just this page.
+     *                The topology map used to derive these by scanning the full player
+     *                list; it cannot once the list is a page, and the aggregate is cheap
+     *                to take here where every player is already being looked at
+     */
+    public record PlayerPage(int total, int matched, int offset, int limit,
+                             List<PlayerView> players, List<EdgeView> edges) {
+    }
+
+    /** An upstream proxy, known only because players arrived through it. */
+    public record EdgeView(String name, int players) {
+    }
+
     public Overview overview() {
         return new Overview(
                 proxy.config().nodeName(),
@@ -173,12 +204,146 @@ public final class ControlState {
         return views;
     }
 
-    public List<PlayerView> players() {
-        List<PlayerView> views = new ArrayList<>();
-        for (ConnectedPlayer player : proxy.players().snapshot()) {
-            views.add(view(player));
+    /** More rows than this in one answer is a client bug, not a request worth serving. */
+    public static final int MAX_LIMIT = 500;
+
+    /**
+     * Alphabetical, because a page of an unordered collection is not a page at all: the
+     * next request would re-order the rows underneath the offset, showing some players
+     * twice and skipping others. Names are unique, so this is a total order.
+     */
+    private static final Comparator<ConnectedPlayer> ORDER =
+            Comparator.comparing(ConnectedPlayer::username, String.CASE_INSENSITIVE_ORDER)
+                    .thenComparing(ConnectedPlayer::uuid);
+
+    /**
+     * One page of the people online, narrowed and ordered.
+     *
+     * <p>Cost is the point. This walks everyone exactly once and holds only the page:
+     * the filter is applied to the live {@link ConnectedPlayer} before any view exists,
+     * so a route is walked and a {@link PlayerView} allocated only for rows that are
+     * actually going to be sent. A partial selection keeps the best {@code offset+limit}
+     * as it goes rather than sorting the whole network, so a hundred-thousand-player node
+     * answers a fifty-row page in one pass and a few kilobytes.
+     *
+     * <p>Deep offsets degrade honestly rather than being refused: the selection grows to
+     * whatever was asked for, capped by how many players there are, so the worst case is
+     * the full sort this exists to avoid and never worse.
+     *
+     * @param query  free text against username, route id, backend and virtual host; the
+     *               same match the dashboard used to do in the browser, moved to where
+     *               the data is
+     * @param server a backend or group name. Unknown names match nobody, which is the
+     *               honest answer to "who is on a server that does not exist"
+     */
+    public PlayerPage players(String query, String server, int offset, int limit) {
+        int wanted = Math.max(0, Math.min(limit, MAX_LIMIT));
+        int from = Math.max(0, offset);
+        int total = proxy.players().count();
+        // Anything past the last player is an empty page whatever the offset, so the
+        // selection never needs to be bigger than the network.
+        int keep = (int) Math.min((long) from + wanted, total);
+
+        String needle = query == null || query.isBlank() ? null : query.trim();
+        Set<RegisteredServer> targets = targets(server);
+
+        // Largest first, so the head is the row to drop once the selection is full.
+        PriorityQueue<ConnectedPlayer> best = new PriorityQueue<>(ORDER.reversed());
+        Map<String, Integer> edges = new LinkedHashMap<>();
+        int matched = 0;
+
+        for (ConnectedPlayer player : proxy.players().all()) {
+            InetSocketAddress upstream = player.proxiedFrom();
+            if (upstream != null) {
+                edges.merge(upstream.getHostString(), 1, Integer::sum);
+            }
+            if (!matches(player, needle, targets)) {
+                continue;
+            }
+            matched++;
+            if (keep == 0) {
+                continue;
+            }
+            // Compare against the worst row held before touching the heap. Once the page
+            // is full most players cannot reach it, and asking is one comparison where
+            // adding and evicting is two O(log k) walks -- which is the difference
+            // between paging costing a scan and paging costing a sort.
+            if (best.size() < keep) {
+                best.add(player);
+            } else if (ORDER.compare(player, best.peek()) < 0) {
+                best.poll();
+                best.add(player);
+            }
         }
-        return views;
+
+        List<ConnectedPlayer> selected = new ArrayList<>(best);
+        selected.sort(ORDER);
+        List<PlayerView> views = new ArrayList<>(Math.min(wanted, selected.size()));
+        for (int i = from; i < selected.size(); i++) {
+            views.add(view(selected.get(i)));
+        }
+
+        List<EdgeView> upstreams = new ArrayList<>(edges.size());
+        edges.forEach((name, count) -> upstreams.add(new EdgeView(name, count)));
+        return new PlayerPage(total, matched, from, wanted, views, upstreams);
+    }
+
+    /**
+     * @param needle  already trimmed, or null for "everyone"
+     * @param targets null for "any backend"; empty for "a backend nobody is on"
+     */
+    private static boolean matches(ConnectedPlayer player, String needle,
+                                   Set<RegisteredServer> targets) {
+        ServerConnection current = player.connectedServer();
+        if (targets != null && (current == null || !targets.contains(current.target()))) {
+            return false;
+        }
+        return needle == null
+                || contains(player.username(), needle)
+                || contains(player.routeId(), needle)
+                || contains(player.virtualHost(), needle)
+                || (current != null && contains(current.target().name(), needle));
+    }
+
+    /**
+     * Case-insensitive substring.
+     *
+     * <p>Written out rather than {@code toLowerCase().contains()} because this runs four
+     * times per player per request, and the obvious version would allocate four throwaway
+     * strings for every person online to answer one search.
+     */
+    private static boolean contains(String value, String needle) {
+        if (value == null) {
+            return false;
+        }
+        int last = value.length() - needle.length();
+        for (int i = 0; i <= last; i++) {
+            if (value.regionMatches(true, i, needle, 0, needle.length())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Resolves a filter name to the backends it means.
+     *
+     * <p>Backends compared by identity rather than by name, so the hot loop never
+     * lowercases a string. A group resolves to its members, because narrowing to "the
+     * survival pool" is the question an operator actually has.
+     *
+     * @return null when nothing was asked for, so the caller can tell "no filter" from
+     *         "a filter that matches nothing"
+     */
+    private Set<RegisteredServer> targets(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        String wanted = name.trim();
+        return proxy.group(wanted)
+                .<Set<RegisteredServer>>map(group -> Set.copyOf(group.members()))
+                .or(() -> proxy.server(wanted).map(Set::of))
+                .orElseGet(Set::of);
     }
 
     public PlayerView view(ConnectedPlayer player) {
