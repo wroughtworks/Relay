@@ -2,6 +2,10 @@ rootProject.name = "relay"
 
 include("proxy", "paper-plugin", "dashboard")
 
+// Worked examples. Not shipped with the proxy; built so they keep compiling against
+// the APIs they demonstrate, which is what stops an example rotting into a lie.
+include("examples:block-mirror")
+
 dependencyResolutionManagement {
     repositories {
         mavenCentral()

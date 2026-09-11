@@ -1,0 +1,9 @@
+# Where block changes on this server are mirrored to: a backend or group name, as the
+# proxy knows it -- the same name you would type after /server.
+#
+# Set this to the *other* server on each side. Two servers pointing at each other give a
+# two-way mirror; pointing several at one name gives a broadcast.
+#
+# Blank means do nothing, which is the default so that installing this plugin by accident
+# does not start editing somebody's world.
+mirror-to: ""

@@ -1,0 +1,23 @@
+name: BlockMirror
+version: '${version}'
+main: dev.relay.example.mirror.BlockMirrorPlugin
+api-version: '1.20'
+author: Relay
+description: Mirrors block places and breaks to another backend, as an example of Relay's packet API.
+
+# The packet API lives in the Relay plugin, so this cannot start without it. A hard
+# depend rather than softdepend: without Relay there is nothing for this to do, and
+# failing to load with a clear reason beats enabling and throwing NoClassDefFoundError
+# on the first block somebody places.
+depend: [Relay]
+
+commands:
+  mirrortest:
+    description: Send one block change by hand, to prove the mirror without building.
+    usage: /mirrortest <x> <y> <z> [block] [world]
+    permission: blockmirror.test
+
+permissions:
+  blockmirror.test:
+    description: Use /mirrortest.
+    default: op

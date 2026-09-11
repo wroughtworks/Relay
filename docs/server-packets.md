@@ -164,6 +164,13 @@ and the round trip; the receiving server logs the ping as it arrives:
 `PacketProbe` in the plugin source is about twenty lines and is the worked example: it is
 everything a plugin has to do to use this.
 
+## A worked example
+
+[`examples/block-mirror`](../examples/block-mirror) is the smallest useful thing built on
+this: place a block on one server and it appears on the other, break it and it breaks
+there too. About forty interesting lines, one packet, and a README covering the four
+decisions in it that matter more than the line count suggests.
+
 ## Client mods
 
 This is server ↔ server. Reaching a **modded client** is the [client
