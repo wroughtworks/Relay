@@ -60,6 +60,10 @@ import java.util.Base64;
  *       envelope: {@code q}, {@code server}, {@code offset}, {@code limit} and
  *       {@code uuid}. {@code players} answers with a page object rather than a list,
  *       because the whole list is not an answer on a large network</li>
+ *   <li>{@code {"type":"do","id":2,"action":"drain","target":"lobby","by":"carson"}} &rarr;
+ *       {@code {"type":"done","id":2,"ok":true,"message":"..."}}. Its own message type
+ *       rather than another query, so reading a companion's traffic makes plain which of
+ *       its messages could have changed the network</li>
  *   <li>{@code {"type":"event",...}} pushed as they happen, unrequested</li>
  *   <li>{@code {"type":"goodbye"}} when the proxy is stopping, so a companion can exit
  *       cleanly rather than being killed</li>
@@ -81,6 +85,7 @@ public final class ControlServer {
 
     private final RelayProxy proxy;
     private final ControlState state;
+    private final ControlActions actions;
     private final Gson gson = new GsonBuilder().serializeNulls().create();
     private final String token = generateToken();
 
@@ -122,6 +127,7 @@ public final class ControlServer {
     public ControlServer(RelayProxy proxy) {
         this.proxy = proxy;
         this.state = new ControlState(proxy);
+        this.actions = new ControlActions(proxy);
     }
 
     public String token() {
@@ -256,6 +262,8 @@ public final class ControlServer {
             }
             if ("query".equals(type)) {
                 answer(ctx, message);
+            } else if ("do".equals(type)) {
+                act(ctx, message);
             }
             // Anything else is ignored rather than an error: a companion built against a
             // newer proxy may send things this one has never heard of, and that should
@@ -294,6 +302,7 @@ public final class ControlServer {
                 case "players" -> state.players(
                         text(message, "q"), text(message, "server"),
                         number(message, "offset", 0), number(message, "limit", 100));
+                case "audit" -> state.auditLog(number(message, "limit", 50));
                 case "history" -> state.history(
                         text(message, "uuid"), number(message, "limit", 50));
                 default -> null;
@@ -307,6 +316,39 @@ public final class ControlServer {
             result.addProperty("what", what);
             result.add("data", data == null ? null : gson.toJsonTree(data));
             ctx.writeAndFlush(gson.toJson(result) + "\n");
+        }
+
+        /**
+         * Runs an action and says what happened.
+         *
+         * <p>A separate message type from {@code query} rather than another {@code what},
+         * so that reading a companion's traffic makes plain which of its messages could
+         * have changed the network. An unknown action is refused by name, not ignored:
+         * silence is how "this proxy is too old for that button" looks identical to "it
+         * worked", and one of those needs saying.
+         */
+        private void act(ChannelHandlerContext ctx, JsonObject message) {
+            String what = text(message, "action");
+            String actor = text(message, "by");
+            String target = text(message, "target");
+            ControlActions.Result result = switch (what == null ? "" : what) {
+                case "drain" -> actions.drain(actor, target, bool(message, "on", true));
+                case "send" -> actions.send(actor, target, text(message, "to"));
+                case "evacuate" -> actions.evacuate(actor, target, text(message, "to"));
+                case "kick" -> actions.kick(actor, target, text(message, "reason"));
+                default -> new ControlActions.Result(false,
+                        "This proxy has no action called '" + what + "'");
+            };
+
+            JsonObject done = new JsonObject();
+            done.addProperty("type", "done");
+            if (message.has("id")) {
+                done.add("id", message.get("id"));
+            }
+            done.addProperty("action", what);
+            done.addProperty("ok", result.ok());
+            done.addProperty("message", result.message());
+            ctx.writeAndFlush(gson.toJson(done) + "\n");
         }
 
         @Override
@@ -330,6 +372,18 @@ public final class ControlServer {
         }
         String string = value.getAsString();
         return string.isBlank() ? null : string;
+    }
+
+    private static boolean bool(JsonObject message, String field, boolean fallback) {
+        JsonElement value = message.get(field);
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsBoolean();
+        } catch (RuntimeException notABoolean) {
+            return fallback;
+        }
     }
 
     private static int number(JsonObject message, String field, int fallback) {

@@ -29,8 +29,13 @@ import java.util.Set;
  * the whole contract between Relay and anything watching it.
  *
  * <p>Read-only, and the boundary is the point rather than a stage to grow out of. Nothing
- * here can move a player, close a connection or touch config, so nothing a companion asks
- * for can destabilise a running network.
+ * here can move a player, close a connection or touch config.
+ *
+ * <p>A companion <em>can</em> now do those things &mdash; spec &sect;9.3 asks for drain,
+ * send and kick, and they live in {@link ControlActions}. What has not changed is this
+ * class: the split is the whole reason there is a second file rather than four more
+ * methods here. Everything that can change the network is in one place, where the list is
+ * the whole list, and anything reached through this one still cannot.
  *
  * <h2>What is deliberately absent</h2>
  * Player IP addresses. The proxy knows them and an operator has fair use for them, but
@@ -172,6 +177,18 @@ public final class ControlState {
     public List<History.Session> history(String uuid, int limit) {
         History history = proxy.history();
         return history == null ? List.of() : history.sessions(uuid, limit);
+    }
+
+    /**
+     * Who did what, newest first.
+     *
+     * <p>Alongside {@link #history}, and empty rather than an error for the same reason:
+     * a companion that has to tell "storage is off" from "an error object where a list
+     * belongs" will get one of them wrong.
+     */
+    public List<History.AuditEvent> auditLog(int limit) {
+        History history = proxy.history();
+        return history == null ? List.of() : history.auditLog(limit);
     }
 
     public List<ServerView> servers() {

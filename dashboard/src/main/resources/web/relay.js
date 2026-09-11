@@ -37,6 +37,23 @@ let serverFilter = "";
 let offset = 0;
 /** What the topology was last drawn from, so an unchanged graph is left alone. */
 let drawn = "";
+/** What /api/me last said: the CSRF token, the role, and the permission nodes. */
+let identity = null;
+
+/**
+ * Whether this account holds a permission node (spec 9.7).
+ *
+ * Matched the way the proxy matches it, so a button appears exactly when the request
+ * behind it would be allowed. This is not the check that matters -- the dashboard checks
+ * again on every write, and the page is attacker-editable -- it is only what stops an
+ * operator being shown a button that will always refuse.
+ */
+const may = node => {
+  if (!identity) return false;
+  if (!identity.required) return true;
+  return (identity.nodes || []).some(held =>
+    held === "*" || held === node || (held.endsWith(".*") && node.startsWith(held.slice(0, -1))));
+};
 
 const duration = s => {
   if (s < 60) return s + "s";
@@ -117,6 +134,9 @@ const countOn = (kind, name) => {
 };
 
 function select(next) {
+  // A message from the last action must not linger over the next selection, where it
+  // would read as being about something it never touched.
+  say("", true);
   // Clicking the current selection again clears it, so there is always a way out
   // that does not require finding the button.
   selection = selection && next && selection.kind === next.kind && selection.id === next.id
@@ -316,6 +336,178 @@ async function paintHistory(uuid, routeId) {
   }
 }
 
+/* -------------------------------------------------------------- acting (§9.3)
+ *
+ * The page can now change the network, which makes two things matter that did not
+ * while it only read. Every request carries the CSRF token from /api/me, never a
+ * cookie -- a token the browser attaches for you is a token an attacker's page gets
+ * attached for them. And the answer shown is always the proxy's own sentence: this
+ * code never decides what happened, it reports what it was told. */
+
+/** Everywhere a player can be sent: groups first, since that is usually the right answer. */
+const destinations = () =>
+  [...data.groups.map(g => g.name), ...data.servers.map(s => s.name)];
+
+function say(message, ok) {
+  const host = $("actMsg");
+  host.textContent = message;
+  host.className = "actmsg" + (message ? (ok ? " ok" : " bad") : "");
+}
+
+/**
+ * Runs one action and reports what the proxy said.
+ *
+ * The button is disabled while it is in flight. An action that takes a moment and looks
+ * like it did nothing is one an operator clicks again, and draining twice is harmless
+ * where kicking twice is not.
+ */
+async function act(path, params, button) {
+  const query = new URLSearchParams(params);
+  const was = button ? button.textContent : null;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "…";
+  }
+  try {
+    const response = await fetch("api/actions/" + path + "?" + query, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": (identity && identity.csrf) || "" },
+    });
+    const body = await response.json().catch(() => ({}));
+    say(body.message || ("The dashboard got a " + response.status + " with nothing in it"),
+        response.ok);
+  } catch (e) {
+    // Deliberately not "it failed": the request may have arrived and been acted on.
+    say("The dashboard could not reach the proxy. Check whether it took effect.", false);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = was;
+    }
+    refresh();
+    loadAudit();
+  }
+}
+
+const actionButton = (label, tone, run) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  if (tone) b.className = tone;
+  b.addEventListener("click", () => run(b));
+  return b;
+};
+
+/** A destination picker, because typing a backend name from memory is how you mistype one. */
+const destinationPicker = () => {
+  const picker = document.createElement("select");
+  for (const name of destinations()) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    picker.appendChild(option);
+  }
+  return picker;
+};
+
+/** The controls for whatever is selected, or none when nothing is, or nothing is permitted. */
+function paintActions() {
+  const host = $("acts");
+  host.replaceChildren();
+  const player = selectedPlayer();
+  const node = selection && selection.kind === "node" ? selection : null;
+
+  if (player) {
+    if (may("relay.player.send") && destinations().length) {
+      const where = destinationPicker();
+      host.append(where, actionButton("send", null, b =>
+        act("send", { player: player.username, to: where.value }, b)));
+    }
+    if (may("relay.player.kick")) {
+      host.appendChild(actionButton("kick", "danger", b => {
+        const reason = prompt("Disconnect " + player.username + " with what reason?",
+                              "Disconnected by an administrator");
+        if (reason === null) return;          // cancelled, which is not an empty reason
+        act("kick", { player: player.username, reason }, b);
+      }));
+    }
+    return;
+  }
+
+  // Only a backend. A pool cannot be drained -- draining every member at once leaves
+  // nowhere to send anyone -- and the proxy refuses it, so offering it here would be a
+  // button whose only possible outcome is an error message.
+  if (!node || !node.id.startsWith("backend:")) return;
+  const name = node.id.slice("backend:".length);
+  const server = data.servers.find(s => s.name === name);
+  if (!server) return;
+
+  if (may("relay.server.drain")) {
+    const draining = server.status === "DRAINING";
+    host.appendChild(actionButton(draining ? "stop draining" : "drain", draining ? null : "warn",
+      b => act("drain", { server: name, on: !draining }, b)));
+  }
+  if (may("relay.player.send") && server.players > 0) {
+    const where = destinationPicker();
+    // Somewhere that contains this backend would move them nowhere. The proxy refuses
+    // that, and leaving it out of the list is friendlier than letting them find out.
+    for (const option of [...where.options]) {
+      const group = data.groups.find(g => g.name === option.value);
+      if (option.value === name || (group && group.members.includes(name))) option.remove();
+    }
+    if (where.options.length) {
+      host.append(where, actionButton("move everyone", "warn", b => {
+        if (!confirm("Move all " + server.players + " players off " + name
+                     + " to " + where.value + "?")) return;
+        act("evacuate", { server: name, to: where.value }, b);
+      }));
+    }
+  }
+}
+
+/**
+ * Who did what (spec 11.2).
+ *
+ * Shown to everyone who can see the dashboard, not only to those who can act. An audit
+ * log readable only by the people it records is one that cannot be used to check up on
+ * them.
+ */
+async function loadAudit() {
+  let events;
+  try {
+    events = await fetch("api/audit?limit=30").then(r => r.json());
+  } catch (e) {
+    return;                     // the page reports the proxy connection separately
+  }
+  const host = $("audit");
+  host.replaceChildren();
+  if (!events.length) {
+    const none = document.createElement("div");
+    none.className = "empty";
+    none.textContent = "nothing has been done from here yet";
+    host.appendChild(none);
+    return;
+  }
+  $("auditNote").textContent = events.length + " most recent";
+  for (const event of events) {
+    const line = document.createElement("div");
+    line.className = "auditline"
+      + (String(event.detail || "").startsWith("refused:") ? " refused" : "");
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = new Date(event.at).toLocaleTimeString();
+    const who = document.createElement("b");
+    who.textContent = event.actor;
+    const what = document.createElement("span");
+    what.textContent = " " + event.action + (event.target ? " " + event.target : "") + " — ";
+    const detail = document.createElement("span");
+    detail.className = "detail";
+    detail.textContent = event.detail || "";
+    line.append(when, who, what, detail);
+    host.appendChild(line);
+  }
+}
+
 function paintTrace() {
   const panel = $("trace");
   const player = selectedPlayer();
@@ -332,11 +524,14 @@ function paintTrace() {
     $("traceMeta").textContent = on === 1
       ? "1 player is routed through here" : on + " players are routed through here";
     $("hops").replaceChildren();
+    paintActions();
     return;
   }
 
   if (!player) {
     panel.classList.remove("on");
+    $("acts").replaceChildren();
+    say("", true);
     return;
   }
 
@@ -378,6 +573,7 @@ function paintTrace() {
     $("hops").replaceChildren(none);
   }
 
+  paintActions();
   paintHistory(player.uuid, player.routeId);
 }
 
@@ -718,6 +914,10 @@ document.addEventListener("keydown", e => {
 async function whoAmI() {
   try {
     const me = await fetch("api/me").then(r => r.json());
+    // Held, not just rendered: the CSRF token and the permission nodes are what decide
+    // which action buttons exist and whether a write request will be accepted.
+    identity = me;
+    paintTrace();
     const host = $("who");
     if (!me.authenticated) {
       host.textContent = me.required ? "" : "open — loopback only, no accounts configured";
@@ -743,6 +943,7 @@ async function whoAmI() {
 
 refresh();
 whoAmI();
+loadAudit();
 loadLog();
 setInterval(refresh, 5000);
 connect();
