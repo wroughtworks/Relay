@@ -214,6 +214,17 @@ proxy-protocol-receive = false
 #   round-robin      each join takes the next member in turn. Better when
 #                    players arrive in waves and player counts lag the truth.
 #   random           cheap, stateless, even enough over any real number of joins.
+#   resource-aware   least loaded first, from the TPS, tick time and heap the
+#                    Relay plugin reports. Forty players in a quiet lobby and
+#                    forty in a redstone farm are not the same load, and this is
+#                    the only strategy that knows the difference. Loads close
+#                    together count as equal and the player count decides, so
+#                    this *is* least-players until something is actually
+#                    struggling -- and a backend with nobody on it cannot report,
+#                    so an empty one counts as idle rather than unknown.
+#   weighted         fewest players per unit of weight, for a group whose
+#                    machines are not the same. See [servers] below; only the
+#                    ratios matter, so 100/50 is the same as 2/1.
 #   first-available  configured order, always. Not balancing: later members
 #                    exist only to catch failures of earlier ones.
 #
@@ -331,6 +342,18 @@ bind = "127.0.0.1:25580"
 
 
 # ----------------------------------------------------------------- backends
+
+# A backend is normally just an address. The table form exists only for
+# `balance = "weighted"`, which needs to know that one machine can take more than
+# another:
+#
+#   [servers]
+#   lobby       = "127.0.0.1:25566"
+#   survival-01 = { address = "127.0.0.1:25567", weight = 100 }
+#   survival-02 = { address = "127.0.0.1:25568", weight = 50 }
+#
+# survival-01 is then preferred until it holds twice what survival-02 does. Every
+# other strategy ignores weight, and a bare address means a weight of 1.
 
 [servers]
 lobby = "127.0.0.1:25566"

@@ -35,12 +35,16 @@ commands that reach the proxy by plugin message. See
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
 - **Groups**: `survival-01` and `survival-02` are a group called `survival` with no
-  config at all, balanced by fewest players, round robin, random, or priority order
+  config at all, balanced by fewest players, round robin, random, priority order,
+  configured weight, or **what the backends say about their own load** — forty players in
+  a quiet lobby and forty in a redstone farm are not the same load, and `resource-aware`
+  is the strategy that knows the difference
 - **Health checks**: every backend status-pinged on an interval, so a dead one leaves
   routing before a player is sent to it — with hysteresis, so one dropped packet does not
   empty a server
 - **Backend load**: TPS, MSPT, heap and CPU pushed by the Relay plugin, because a server
-  deep in a GC spiral still answers status pings perfectly well
+  deep in a GC spiral still answers status pings perfectly well — and with
+  `balance = "resource-aware"`, routed on rather than merely displayed
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage

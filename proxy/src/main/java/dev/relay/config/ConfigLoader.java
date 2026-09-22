@@ -254,13 +254,49 @@ public final class ConfigLoader {
         for (Config.Entry entry : section.entrySet()) {
             String name = entry.getKey();
             Object value = entry.getValue();
-            if (!(value instanceof String address)) {
-                throw new IllegalArgumentException(
-                        "Backend '" + name + "' must be a \"host:port\" string, got " + value);
+            // Two forms, because the second one exists only for weighted balancing and
+            // most networks never need it. A bare string stays the ordinary way to
+            // declare a backend and means a weight of one.
+            if (value instanceof String address) {
+                servers.put(name, new ServerEntry(name, parseAddress(address, "servers." + name)));
+            } else if (value instanceof Config table) {
+                servers.put(name, parseServerTable(name, table));
+            } else {
+                throw new IllegalArgumentException("Backend '" + name + "' must be a "
+                        + "\"host:port\" string, or a table with an address and a weight, got "
+                        + value);
             }
-            servers.put(name, new ServerEntry(name, parseAddress(address, "servers." + name)));
         }
         return servers;
+    }
+
+    /**
+     * Reads {@code name = { address = "host:port", weight = 50 }}.
+     *
+     * <p>Strict about the weight, because the failure is otherwise invisible: a zero or
+     * negative one would divide a player count by nothing and produce an order nobody
+     * could explain, and a typo silently reverting to 1 would leave an operator wondering
+     * why weighting had no effect.
+     */
+    private static ServerEntry parseServerTable(String name, Config table) {
+        String key = "servers." + name;
+        Object address = table.get("address");
+        if (!(address instanceof String text)) {
+            throw new IllegalArgumentException(
+                    key + " is a table, so it needs an address = \"host:port\"");
+        }
+        Object weight = table.get("weight");
+        if (weight == null) {
+            return new ServerEntry(name, parseAddress(text, key));
+        }
+        if (!(weight instanceof Number number)) {
+            throw new IllegalArgumentException(key + ".weight must be a number, got " + weight);
+        }
+        double value = number.doubleValue();
+        if (!(value > 0) || Double.isInfinite(value)) {
+            throw new IllegalArgumentException(key + ".weight must be greater than zero, got " + value);
+        }
+        return new ServerEntry(name, parseAddress(text, key), value);
     }
 
     /**

@@ -477,6 +477,82 @@ class ConfigLoaderTest {
         assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(path));
     }
 
+    /**
+     * The table form of a backend, which exists only for weighted balancing.
+     *
+     * <p>A bare address stays the ordinary way to declare one, so the two forms have to mix
+     * without surprises: an unweighted backend is weight 1, and that is what makes a group
+     * with one weighted member behave sensibly rather than treating the others as zero.
+     */
+    @Test
+    void backendsMayCarryAWeight(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+                balance = "weighted"
+                health.enabled = false
+                control.enabled = false
+
+                [servers]
+                lobby = "127.0.0.1:25566"
+                survival-01 = { address = "127.0.0.1:25567", weight = 100 }
+                survival-02 = { address = "127.0.0.1:25568" }
+                """);
+        RelayConfig config = ConfigLoader.load(path);
+
+        assertEquals(1.0, config.servers().get("lobby").weight(),
+                "a bare address has to mean a weight of one, not zero");
+        assertEquals(100.0, config.servers().get("survival-01").weight());
+        assertEquals(1.0, config.servers().get("survival-02").weight(),
+                "a table without a weight is still just a backend");
+        assertEquals(25567, config.servers().get("survival-01").address().getPort());
+    }
+
+    /**
+     * A weight that cannot work is named at startup.
+     *
+     * <p>Zero or negative would divide a player count by nothing and produce an order
+     * nobody could explain, and a misspelled key silently reverting to 1 would leave an
+     * operator wondering why weighting had no effect at all.
+     */
+    @Test
+    void anImpossibleWeightIsRefusedWithTheKeyNamed(@TempDir Path dir) throws IOException {
+        for (String weight : new String[] {"0", "-5", "\"lots\""}) {
+            Path path = dir.resolve("relay-" + weight.replaceAll("[^a-z0-9]", "") + ".toml");
+            Files.writeString(path, """
+                    bind = "0.0.0.0:25565"
+                    forwarding-mode = "none"
+                    health.enabled = false
+                    control.enabled = false
+
+                    [servers]
+                    survival-01 = { address = "127.0.0.1:25567", weight = %s }
+                    """.formatted(weight));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> ConfigLoader.load(path), "accepted a weight of " + weight);
+            assertTrue(error.getMessage().contains("servers.survival-01.weight"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void aBackendTableStillNeedsAnAddress(@TempDir Path dir) throws IOException {
+        Path path = dir.resolve("relay.toml");
+        Files.writeString(path, """
+                bind = "0.0.0.0:25565"
+                forwarding-mode = "none"
+                health.enabled = false
+                control.enabled = false
+
+                [servers]
+                survival-01 = { weight = 50 }
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ConfigLoader.load(path));
+        assertTrue(error.getMessage().contains("address"), error.getMessage());
+    }
+
     @Test
     void forwardingModeAcceptsFriendlyAliases() {
         assertEquals(ForwardingMode.MODERN, ForwardingMode.parse("velocity"));
