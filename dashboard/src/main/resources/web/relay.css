@@ -60,6 +60,40 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
      display: flex; align-items: baseline; gap: 10px; }
 h2 .note { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
 
+/* Paging, which appears only when the list has more than one page. The proxy does the
+   narrowing now, so these move a window rather than scrolling an array already here. */
+.pager { margin-left: auto; display: flex; gap: 6px; }
+.pager button { font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0;
+                cursor: pointer; color: var(--muted); background: none;
+                border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; }
+.pager button:hover:not(:disabled) { color: var(--text); }
+.pager button:disabled { opacity: 0.35; cursor: default; }
+
+/* Acting on what is selected (spec 9.3). Deliberately plain: a destructive control that
+   looks exciting gets clicked, and these move real people between real servers. */
+.acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+.acts button, .acts select { font: inherit; font-size: 12px; padding: 4px 10px;
+                             border: 1px solid var(--line); border-radius: 6px;
+                             background: var(--panel); color: var(--text); cursor: pointer; }
+.acts button:hover:not(:disabled) { border-color: var(--muted); }
+.acts button:disabled { opacity: 0.5; cursor: default; }
+.acts button.warn { color: var(--accent); border-color: var(--accent); }
+.acts button.danger { color: var(--bad); border-color: var(--bad); }
+.actmsg { font-size: 12px; margin-top: 8px; min-height: 1em; }
+.actmsg.ok { color: var(--good); }
+.actmsg.bad { color: var(--bad); }
+
+/* Who did what. A refused attempt is kept and greyed rather than hidden: "somebody tried
+   and could not" is often the more interesting row. */
+#audit { padding: 6px 0; }
+.auditline { padding: 4px 12px; font-size: 12px; border-bottom: 1px solid var(--line);
+             display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.auditline:last-child { border-bottom: none; }
+.auditline .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.auditline .detail { color: var(--muted); }
+.auditline.refused { opacity: 0.7; }
+.auditline.refused .detail { color: var(--accent); }
+
 .scroll { overflow-x: auto; background: var(--panel);
           border: 1px solid var(--line); border-radius: 10px; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }

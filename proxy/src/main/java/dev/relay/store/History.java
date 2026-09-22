@@ -186,6 +186,48 @@ public final class History {
         database.submit("prune audit", "DELETE FROM audit_event WHERE at < ?", cutoff);
     }
 
+    // ---------------------------------------------------------------------- audit
+
+    /**
+     * Records an action somebody took, as spec &sect;11.2 asks.
+     *
+     * <p>Everything else this class writes is the proxy describing what happened to it.
+     * This is the one table that says <em>who did it</em>, and it exists because an action
+     * surface without one is a network where "who drained survival-02 at 3am" has no
+     * answer. Written for every attempt, refusals included: a rejected action is often the
+     * more interesting row.
+     *
+     * @param actor  the account that asked, as the dashboard authenticated it
+     * @param action a short verb, matching the permission node it needed
+     * @param target what it was done to, or null
+     * @param detail the outcome, in the words the operator was given
+     */
+    public void audit(String actor, String action, String target, String detail) {
+        database.submit("audit",
+                "INSERT INTO audit_event (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)",
+                System.currentTimeMillis(), actor, action, target, detail);
+    }
+
+    /** One recorded action. */
+    public record AuditEvent(long at, String actor, String action, String target, String detail) {
+    }
+
+    /** Recent actions, newest first. */
+    public List<AuditEvent> auditLog(int limit) {
+        return database.query("audit log",
+                "SELECT at, actor, action, target, detail FROM audit_event "
+                        + "ORDER BY at DESC LIMIT " + Math.max(1, Math.min(limit, 500)),
+                results -> {
+                    try {
+                        return new AuditEvent(results.getLong("at"), results.getString("actor"),
+                                results.getString("action"), results.getString("target"),
+                                results.getString("detail"));
+                    } catch (java.sql.SQLException e) {
+                        throw new IllegalStateException("could not read an audit row", e);
+                    }
+                });
+    }
+
     // ---------------------------------------------------------------------- reading
 
     /** One past visit, flattened for a companion. */

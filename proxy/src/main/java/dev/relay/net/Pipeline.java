@@ -22,6 +22,9 @@ public final class Pipeline {
     /** Diagnostic handler recording what closes a connection; present only when configured. */
     public static final String CLOSE_TRACER = "close-tracer";
 
+    /** Optional flush batching; see RelayConfig#flushBatching. Absent unless configured. */
+    public static final String FLUSH_CONSOLIDATION = "flush-consolidation";
+
     /**
      * Wire-byte counter. At the head, so it sees bytes as they are on the network --
      * compressed and encrypted -- rather than as Relay thinks of them.

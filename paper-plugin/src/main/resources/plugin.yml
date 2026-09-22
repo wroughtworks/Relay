@@ -31,7 +31,7 @@ commands:
     usage: /drain [server] [off]
   relay:
     description: Talk to the proxy over the backend API.
-    usage: /relay [probe|connect <server>|forward <text>]
+    usage: /relay [probe|connect <server>|forward <text>|packet <server>]
     permission: relay.admin
     aliases: [relayproxy]
 

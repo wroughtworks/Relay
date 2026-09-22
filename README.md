@@ -13,7 +13,7 @@ those are phases 2 and 3.
 | Phase | Scope | State |
 |---|---|---|
 | 1. MVP | Protocol layer, status/login/play relay, config, `/server`, forwarding modes | **Working** — a real client joins, plays, and switches servers, verified on 1.20.2, 1.21.4 and 1.21.8 |
-| 2. Dashboard | Javalin backend, WebSocket live data, local auth | **Working, read-only** — topology graph, per-player route tracing, traffic metrics, live console, sign-in with roles. The acting half (drain, send, kick) not started |
+| 2. Dashboard | Javalin backend, WebSocket live data, local auth | **Working** — topology graph, per-player route tracing, traffic metrics, live console, sign-in with roles, and drain/send/evacuate/kick with an audit log |
 | 3. Plugins | Annotation + Guice loader, event bus | Not started |
 | 4. Hardening | RBAC, Pelican integration, Prometheus, config editor | Permission nodes exist; the rest not started |
 | 5. Cutover | Run beside Velocity, migrate | Not started |
@@ -35,12 +35,16 @@ commands that reach the proxy by plugin message. See
 - **Switching**: `/server` and API-driven, via the 1.20.2+ configuration-phase handover
 - **Routing**: ordered fallback list, forced hosts per virtual hostname
 - **Groups**: `survival-01` and `survival-02` are a group called `survival` with no
-  config at all, balanced by fewest players, round robin, random, or priority order
+  config at all, balanced by fewest players, round robin, random, priority order,
+  configured weight, or **what the backends say about their own load** — forty players in
+  a quiet lobby and forty in a redstone farm are not the same load, and `resource-aware`
+  is the strategy that knows the difference
 - **Health checks**: every backend status-pinged on an interval, so a dead one leaves
   routing before a player is sent to it — with hysteresis, so one dropped packet does not
   empty a server
 - **Backend load**: TPS, MSPT, heap and CPU pushed by the Relay plugin, because a server
-  deep in a GC spiral still answers status pings perfectly well
+  deep in a GC spiral still answers status pings perfectly well — and with
+  `balance = "resource-aware"`, routed on rather than merely displayed
 - **Resilience**: a backend that dies — or kicks everyone on the way down, as a planned
   restart does — moves its players to the next server in the try list rather than off the
   network, so restarting one server is not an outage
@@ -50,13 +54,19 @@ commands that reach the proxy by plugin message. See
   already on it — Relay announces the moment it empties
 - **Backend API**: BungeeCord-compatible plugin messaging, so existing network plugins
   work unchanged — see [docs/backend-api.md](docs/backend-api.md)
+- **Server-to-server packets**: typed messages between backends, with ids assigned by a
+  shared factory and a fingerprint that refuses a registry the other side does not agree
+  with, rather than decoding one packet as another —
+  see [docs/server-packets.md](docs/server-packets.md), with a worked example in
+  [examples/block-mirror](examples/block-mirror)
 - **Client API**: a plugin-message protocol for client-side mods —
   see [docs/client-api.md](docs/client-api.md)
 - **Operations**: backpressure both directions, bounded buffers, graceful shutdown, and
   a half-close when detaching a backend, so switching a player does not make its old
   server log a connection reset
-- **Dashboard**: a live page plus read-only REST and a WebSocket, off by default —
-  see [Dashboard API](#dashboard-api)
+- **Dashboard**: a live page plus REST and a WebSocket, off by default — topology map,
+  per-player route tracing, metrics, live console, sign-in with roles, and drain/send/kick
+  with an audit log — see [Dashboard API](#dashboard-api)
 
 ## Requirements
 
@@ -295,8 +305,17 @@ dashboard that needs a CDN to render fails exactly when someone is diagnosing an
 | `GET /api/overview` | players, uptime, backend and group counts, balance strategy |
 | `GET /api/servers` | each backend: address, group, health, latency, version, its own player count, and a `load` object with TPS, MSPT, heap and CPU |
 | `GET /api/groups` | each group, its members, and its total |
-| `GET /api/players` | who is online, which backend they are on, and their full network route |
+| `GET /api/players` | one page of who is online, each with the backend they are on and their full network route. Takes `q`, `server`, `offset` and `limit`; answers `{total, matched, offset, limit, players, edges}` |
 | `WS /api/events` | one socket carrying every event type |
+| `GET /api/audit` | who did what, newest first |
+| `POST /api/actions/{drain,send,evacuate,kick}` | spec §9.3's actions. Permission-checked against §9.7's nodes, CSRF-checked, and written to the audit log — refusals included |
+
+The player list is a page, and the narrowing happens in the proxy. Sending everyone and
+filtering in the browser was fine for a test network and is not survivable on a real one:
+it is the whole player list, every row carrying a freshly walked route, rebuilt every few
+seconds for every open tab. The proxy walks everyone once per request, keeps only the
+rows it is about to send, and totals the upstream edges on the way past so the topology
+map still says something true about a network it is no longer being shown all of.
 
 Events arrive as `{type, player, from, to}`, with `type` one of `PLAYER_CONNECTED`,
 `PLAYER_DISCONNECTED`, `PLAYER_SWITCHED_SERVER`, `SERVER_HEALTH_CHANGED`. One socket
@@ -304,11 +323,23 @@ multiplexes them all, per
 spec §9.4 — a socket per type would multiply connections by the number of things worth
 watching.
 
-**Read-only is the boundary, not a stage.** Nothing here moves a player, closes a
-connection or edits config, which is what makes it reasonable to run before spec §9.6's
-authentication exists. For the same reason player records carry **no IP address**: saying
-who is online is one thing, pairing usernames with home addresses on an unauthenticated
-port is another. Addresses arrive with the login that guards them.
+**Reading and acting are separate surfaces.** Everything above the actions is read-only
+by construction — a companion reaches it through `ControlState`, which cannot move a player
+or close a connection. The four things that can are in `ControlActions`, behind their own
+control message type, so that reading a companion's traffic shows which of its messages
+could have changed the network. Config editing is deliberately absent and stays absent:
+`relay.toml` is the single source of truth and something you keep in git, and a dashboard
+that could rewrite it would make the file a cache of a database nobody can read.
+
+The read side needs no account when the dashboard is on loopback with none configured,
+which is the development default and the only unauthenticated mode there is — off loopback
+with no accounts, it refuses to start. The actions are checked against §9.7's permission
+nodes either way, and every one of them, refused or not, is written to the audit log with
+the account that asked.
+
+Player records still carry **no IP address**. Saying who is online is one thing; pairing
+usernames with home addresses is another, and nothing on the page needs it. Addresses can
+arrive the day something does.
 
 `load` is null until the Relay plugin reports, and carries `stale` once it stops. The
 proxy cannot measure these from outside, and cannot ask for them either: a plugin message

@@ -39,6 +39,8 @@
     <h3 id="traceTitle"></h3>
     <div class="meta" id="traceMeta"></div>
     <div class="hops" id="hops"></div>
+    <div class="acts" id="acts"></div>
+    <div class="actmsg" id="actMsg"></div>
     <div id="past"></div>
   </section>
 
@@ -50,12 +52,16 @@
     <tbody id="servers"></tbody>
   </table></div>
 
-  <h2>Players <span class="note" id="playerCount"></span></h2>
+  <h2>Players <span class="note" id="playerCount"></span>
+      <span class="pager" id="pager"></span></h2>
   <div class="scroll"><table>
     <thead><tr><th>Player</th><th>On</th><th>Via</th><th>Protocol</th>
                <th>Online</th><th>Route ID</th></tr></thead>
     <tbody id="players"></tbody>
   </table></div>
+
+  <h2>Recent actions <span class="note" id="auditNote"></span></h2>
+  <div class="scroll"><div id="audit"><div class="empty">nothing yet</div></div></div>
 
   <h2>Events</h2>
   <div class="scroll"><div id="feed"><div class="empty">nothing yet</div></div></div>

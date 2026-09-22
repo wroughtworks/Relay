@@ -28,11 +28,19 @@ dependencies {
     compileOnly(libs.logback)
     runtimeOnly(libs.logback)
 
+    testImplementation(libs.asm)
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     // The colour converter is a logback extension, so its test needs logback too.
     testImplementation(libs.logback)
     testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+// PromiseRuleTest reads the Paper plugin's compiled classes as well as the proxy's:
+// the rule it enforces exists because of a bug that was in the plugin, so covering only
+// this module would be covering the wrong one.
+tasks.test {
+    dependsOn(":paper-plugin:classes")
 }
 
 tasks.shadowJar {
@@ -63,6 +71,13 @@ tasks.build {
  * A warning rather than a failure: rebuilding while the proxy runs is a perfectly
  * reasonable thing to do when you are about to restart it, which is most of the time.
  */
+// PromiseRuleTest reads the Paper plugin's compiled classes as well as the proxy's:
+// the rule it enforces exists because of a bug that was in the plugin, so covering only
+// this module would be covering the wrong one.
+tasks.test {
+    dependsOn(":paper-plugin:classes")
+}
+
 tasks.shadowJar {
     doFirst {
         // The pid file the proxy writes at startup, rather than a process scan:

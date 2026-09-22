@@ -30,6 +30,34 @@ public enum BalanceStrategy {
     RANDOM("random"),
 
     /**
+     * Fewest players per unit of configured weight.
+     *
+     * <p>Spec &sect;6.2's weighted strategy, for a group whose machines are not the same.
+     * A backend given twice the weight is preferred until it holds twice the players, so
+     * the ratios are what matter and {@code 100}/{@code 50} behaves identically to
+     * {@code 2}/{@code 1}.
+     *
+     * <p>Static, which is the point: it describes hardware rather than reacting to load.
+     * Use {@link #RESOURCE_AWARE} when what a backend can take varies with what it is
+     * doing.
+     */
+    WEIGHTED("weighted"),
+
+    /**
+     * Least loaded first, by what the backends say about themselves.
+     *
+     * <p>Spec &sect;6.2. {@link #LEAST_PLAYERS} treats forty players in a quiet lobby and
+     * forty in a redstone farm as the same load; this reads the TPS, tick time and heap
+     * the Relay plugin already reports, so a server that is struggling stops being handed
+     * new arrivals before anyone has to notice and drain it.
+     *
+     * <p>It degrades to {@code least-players} rather than replacing it: loads close
+     * together count as equal, and the player count decides between them. A network where
+     * nothing is under strain therefore balances exactly as it did before.
+     */
+    RESOURCE_AWARE("resource-aware"),
+
+    /**
      * Configured order, always. Not balancing at all: the group becomes a priority list
      * where later members exist only to catch failures of earlier ones.
      */

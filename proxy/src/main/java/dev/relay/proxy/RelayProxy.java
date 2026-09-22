@@ -236,6 +236,12 @@ public final class RelayProxy {
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(bossGroup, workerGroup)
                 .channel(transport.serverChannelType())
+                // The accept queue. Netty's default follows the OS, which is 128 on many
+                // systems -- fine until a proxy restarts and every player reconnects at
+                // once, when the ones that do not fit are refused rather than queued.
+                // A large network's reconnect storm is the only time this matters, and it
+                // is exactly the time it must not fail.
+                .option(ChannelOption.SO_BACKLOG, 4096)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 // Backpressure: stop reading from a player whose backend has fallen
@@ -248,7 +254,7 @@ public final class RelayProxy {
                                 channel, PacketDirection.SERVERBOUND, config.readTimeoutMillis(),
                                 config.proxyProtocolReceive(), false,
                                 config.traceCloses() ? "player " + channel.remoteAddress() : null,
-                                metrics);
+                                metrics, config.flushBatching());
                         // Counted here rather than at login: a connection that never gets
                         // past the handshake still consumed a socket, and the gap between
                         // this and the player count is exactly what a scan looks like.
@@ -513,7 +519,7 @@ public final class RelayProxy {
                                 config.traceCloses()
                                         ? "backend " + target.name() + " for " + player.username()
                                         : null,
-                                metrics);
+                                metrics, config.flushBatching());
                         connection.setVersion(player.version());
                         attempt.setConnection(connection);
                     }

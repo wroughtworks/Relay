@@ -40,6 +40,7 @@ public record RelayConfig(
         int healthIntervalMillis,
         int healthTimeoutMillis,
         int healthFailuresBeforeDown,
+        boolean flushBatching,
         boolean storageEnabled,
         String storageFile,
         int storageRetainDays,
@@ -81,8 +82,20 @@ public record RelayConfig(
                                  boolean restart, Map<String, String> environment) {
     }
 
-    /** A backend Relay can send players to. */
-    public record ServerEntry(String name, InetSocketAddress address) {
+    /**
+     * A backend Relay can send players to.
+     *
+     * @param weight how much of a group's traffic this member should take relative to its
+     *               siblings, under {@code balance = "weighted"}. Only ratios matter, so
+     *               {@code 100}/{@code 50} is the same thing as {@code 2}/{@code 1}, and
+     *               every other strategy ignores it
+     */
+    public record ServerEntry(String name, InetSocketAddress address, double weight) {
+
+        /** The ordinary case: an address and nothing to say about capacity. */
+        public ServerEntry(String name, InetSocketAddress address) {
+            this(name, address, 1.0);
+        }
     }
 
     /**

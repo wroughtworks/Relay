@@ -10,12 +10,50 @@ import { chartCard, formatBytes, formatCount } from "./charts.js";
 
 const $ = id => document.getElementById(id);
 
-let data = { overview: null, servers: [], groups: [], players: [], metrics: null };
-/** Either {kind:"player", id:<routeId>} or {kind:"node", id:<graph node id>}. */
+/** Rows per request. The proxy caps this at 200; nobody reads more at once anyway. */
+const PAGE_SIZE = 50;
+
+const emptyPage = () =>
+  ({ total: 0, matched: 0, offset: 0, limit: PAGE_SIZE, players: [], edges: [] });
+
+let data = { overview: null, servers: [], groups: [], page: emptyPage(), metrics: null };
+/**
+ * Either {kind:"node", id:<graph node id>} or {kind:"player", id:<routeId>, player:<row>}.
+ *
+ * A player selection carries the row rather than looking it up, because the row may not
+ * be on the page any more -- the operator can search for someone, trace them, and then
+ * page away without the panel emptying underneath them.
+ */
 let selection = null;
+/**
+ * The narrowing, which the proxy applies rather than the browser.
+ *
+ * Filtering here meant fetching every player to throw most of them away, which is the
+ * thing that stopped scaling: the whole list, each row carrying a freshly walked route,
+ * rebuilt every five seconds for every open tab.
+ */
 let search = "";
+let serverFilter = "";
+let offset = 0;
 /** What the topology was last drawn from, so an unchanged graph is left alone. */
 let drawn = "";
+/** What /api/me last said: the CSRF token, the role, and the permission nodes. */
+let identity = null;
+
+/**
+ * Whether this account holds a permission node (spec 9.7).
+ *
+ * Matched the way the proxy matches it, so a button appears exactly when the request
+ * behind it would be allowed. This is not the check that matters -- the dashboard checks
+ * again on every write, and the page is attacker-editable -- it is only what stops an
+ * operator being shown a button that will always refuse.
+ */
+const may = node => {
+  if (!identity) return false;
+  if (!identity.required) return true;
+  return (identity.nodes || []).some(held =>
+    held === "*" || held === node || (held.endsWith(".*") && node.startsWith(held.slice(0, -1))));
+};
 
 const duration = s => {
   if (s < 60) return s + "s";
@@ -63,11 +101,9 @@ const fill = (tbody, rows, columns, emptyText) => {
   for (const r of rows) tbody.appendChild(r);
 };
 
-/** The player a "player" selection refers to, or null if they have since left. */
+/** The player a "player" selection refers to, or null if nobody is traced. */
 const selectedPlayer = () =>
-  selection && selection.kind === "player"
-    ? data.players.find(p => p.routeId === selection.id) || null
-    : null;
+  selection && selection.kind === "player" ? selection.player : null;
 
 /** Does this player's route pass through the selected graph node? */
 function routesThrough(player, nodeId) {
@@ -79,25 +115,52 @@ function routesThrough(player, nodeId) {
     || (kind === "backend" && hop.kind === "BACKEND" && hop.name === name));
 }
 
-const matchesSearch = p => {
-  if (!search) return true;
-  const q = search.toLowerCase();
-  return [p.username, p.routeId, p.server, p.virtualHost]
-    .some(v => v && String(v).toLowerCase().includes(q));
+/** The name a node selection narrows the player list to, or "" for no narrowing. */
+const nodeFilter = sel => {
+  if (!sel || sel.kind !== "node") return "";
+  const cut = sel.id.indexOf(":");
+  const kind = sel.id.slice(0, cut);
+  // A pool or a backend is a set of players the proxy can look up. The proxy node is
+  // everyone, and an edge is not a backend, so neither narrows anything.
+  return kind === "backend" || kind === "pool" ? sel.id.slice(cut + 1) : "";
+};
+
+/** How many players are on a graph node, from whichever collection knows exactly. */
+const countOn = (kind, name) => {
+  if (kind === "backend") return (data.servers.find(s => s.name === name) || {}).players || 0;
+  if (kind === "pool") return (data.groups.find(g => g.name === name) || {}).players || 0;
+  if (kind === "edge") return (data.page.edges.find(e => e.name === name) || {}).players || 0;
+  return data.overview ? data.overview.players : 0;
 };
 
 function select(next) {
+  // A message from the last action must not linger over the next selection, where it
+  // would read as being about something it never touched.
+  say("", true);
   // Clicking the current selection again clears it, so there is always a way out
   // that does not require finding the button.
   selection = selection && next && selection.kind === next.kind && selection.id === next.id
     ? null : next;
+
+  // Picking a backend or a pool asks the proxy for its players rather than dimming
+  // whichever of them happened to be on the page. Picking a *player* leaves the
+  // narrowing alone: tracing someone you found by filtering should not undo the filter.
+  if (!next || next.kind === "node") {
+    const want = nodeFilter(selection);
+    if (want !== serverFilter) {
+      serverFilter = want;
+      offset = 0;
+      refresh();
+      return;
+    }
+  }
   paint();
 }
 
 // ------------------------------------------------------------------ rendering
 
 function paint() {
-  const { overview, servers, groups, players } = data;
+  const { overview } = data;
   if (!overview) return;
 
   $("meta").textContent =
@@ -188,7 +251,7 @@ function paintMetrics() {
 }
 
 function paintTopology() {
-  const graph = buildGraph(data.overview, data.servers, data.groups, data.players);
+  const graph = buildGraph(data.overview, data.servers, data.groups, data.page.edges);
   const player = selectedPlayer();
   const trace = player ? traceOf(player, data.overview) : null;
   const picked = selection && selection.kind === "node" ? selection.id : null;
@@ -273,26 +336,202 @@ async function paintHistory(uuid, routeId) {
   }
 }
 
+/* -------------------------------------------------------------- acting (§9.3)
+ *
+ * The page can now change the network, which makes two things matter that did not
+ * while it only read. Every request carries the CSRF token from /api/me, never a
+ * cookie -- a token the browser attaches for you is a token an attacker's page gets
+ * attached for them. And the answer shown is always the proxy's own sentence: this
+ * code never decides what happened, it reports what it was told. */
+
+/** Everywhere a player can be sent: groups first, since that is usually the right answer. */
+const destinations = () =>
+  [...data.groups.map(g => g.name), ...data.servers.map(s => s.name)];
+
+function say(message, ok) {
+  const host = $("actMsg");
+  host.textContent = message;
+  host.className = "actmsg" + (message ? (ok ? " ok" : " bad") : "");
+}
+
+/**
+ * Runs one action and reports what the proxy said.
+ *
+ * The button is disabled while it is in flight. An action that takes a moment and looks
+ * like it did nothing is one an operator clicks again, and draining twice is harmless
+ * where kicking twice is not.
+ */
+async function act(path, params, button) {
+  const query = new URLSearchParams(params);
+  const was = button ? button.textContent : null;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "…";
+  }
+  try {
+    const response = await fetch("api/actions/" + path + "?" + query, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": (identity && identity.csrf) || "" },
+    });
+    const body = await response.json().catch(() => ({}));
+    say(body.message || ("The dashboard got a " + response.status + " with nothing in it"),
+        response.ok);
+  } catch (e) {
+    // Deliberately not "it failed": the request may have arrived and been acted on.
+    say("The dashboard could not reach the proxy. Check whether it took effect.", false);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = was;
+    }
+    refresh();
+    loadAudit();
+  }
+}
+
+const actionButton = (label, tone, run) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  if (tone) b.className = tone;
+  b.addEventListener("click", () => run(b));
+  return b;
+};
+
+/** A destination picker, because typing a backend name from memory is how you mistype one. */
+const destinationPicker = () => {
+  const picker = document.createElement("select");
+  for (const name of destinations()) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    picker.appendChild(option);
+  }
+  return picker;
+};
+
+/** The controls for whatever is selected, or none when nothing is, or nothing is permitted. */
+function paintActions() {
+  const host = $("acts");
+  host.replaceChildren();
+  const player = selectedPlayer();
+  const node = selection && selection.kind === "node" ? selection : null;
+
+  if (player) {
+    if (may("relay.player.send") && destinations().length) {
+      const where = destinationPicker();
+      host.append(where, actionButton("send", null, b =>
+        act("send", { player: player.username, to: where.value }, b)));
+    }
+    if (may("relay.player.kick")) {
+      host.appendChild(actionButton("kick", "danger", b => {
+        const reason = prompt("Disconnect " + player.username + " with what reason?",
+                              "Disconnected by an administrator");
+        if (reason === null) return;          // cancelled, which is not an empty reason
+        act("kick", { player: player.username, reason }, b);
+      }));
+    }
+    return;
+  }
+
+  // Only a backend. A pool cannot be drained -- draining every member at once leaves
+  // nowhere to send anyone -- and the proxy refuses it, so offering it here would be a
+  // button whose only possible outcome is an error message.
+  if (!node || !node.id.startsWith("backend:")) return;
+  const name = node.id.slice("backend:".length);
+  const server = data.servers.find(s => s.name === name);
+  if (!server) return;
+
+  if (may("relay.server.drain")) {
+    const draining = server.status === "DRAINING";
+    host.appendChild(actionButton(draining ? "stop draining" : "drain", draining ? null : "warn",
+      b => act("drain", { server: name, on: !draining }, b)));
+  }
+  if (may("relay.player.send") && server.players > 0) {
+    const where = destinationPicker();
+    // Somewhere that contains this backend would move them nowhere. The proxy refuses
+    // that, and leaving it out of the list is friendlier than letting them find out.
+    for (const option of [...where.options]) {
+      const group = data.groups.find(g => g.name === option.value);
+      if (option.value === name || (group && group.members.includes(name))) option.remove();
+    }
+    if (where.options.length) {
+      host.append(where, actionButton("move everyone", "warn", b => {
+        if (!confirm("Move all " + server.players + " players off " + name
+                     + " to " + where.value + "?")) return;
+        act("evacuate", { server: name, to: where.value }, b);
+      }));
+    }
+  }
+}
+
+/**
+ * Who did what (spec 11.2).
+ *
+ * Shown to everyone who can see the dashboard, not only to those who can act. An audit
+ * log readable only by the people it records is one that cannot be used to check up on
+ * them.
+ */
+async function loadAudit() {
+  let events;
+  try {
+    events = await fetch("api/audit?limit=30").then(r => r.json());
+  } catch (e) {
+    return;                     // the page reports the proxy connection separately
+  }
+  const host = $("audit");
+  host.replaceChildren();
+  if (!events.length) {
+    const none = document.createElement("div");
+    none.className = "empty";
+    none.textContent = "nothing has been done from here yet";
+    host.appendChild(none);
+    return;
+  }
+  $("auditNote").textContent = events.length + " most recent";
+  for (const event of events) {
+    const line = document.createElement("div");
+    line.className = "auditline"
+      + (String(event.detail || "").startsWith("refused:") ? " refused" : "");
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = new Date(event.at).toLocaleTimeString();
+    const who = document.createElement("b");
+    who.textContent = event.actor;
+    const what = document.createElement("span");
+    what.textContent = " " + event.action + (event.target ? " " + event.target : "") + " — ";
+    const detail = document.createElement("span");
+    detail.className = "detail";
+    detail.textContent = event.detail || "";
+    line.append(when, who, what, detail);
+    host.appendChild(line);
+  }
+}
+
 function paintTrace() {
   const panel = $("trace");
   const player = selectedPlayer();
 
   $("past").replaceChildren();
   if (selection && selection.kind === "node") {
-    const name = selection.id.slice(selection.id.indexOf(":") + 1);
-    const on = data.players.filter(p => routesThrough(p, selection.id)).length;
+    const cut = selection.id.indexOf(":");
+    const name = selection.id.slice(cut + 1);
+    // Counted from servers, groups and the page's edge totals rather than by scanning
+    // the rows on screen, which would now say "50" about every busy backend.
+    const on = countOn(selection.id.slice(0, cut), name);
     panel.classList.add("on");
     $("traceTitle").textContent = name;
     $("traceMeta").textContent = on === 1
       ? "1 player is routed through here" : on + " players are routed through here";
     $("hops").replaceChildren();
+    paintActions();
     return;
   }
 
   if (!player) {
     panel.classList.remove("on");
-    // A selected player who has since disconnected leaves a stale selection behind.
-    if (selection && selection.kind === "player") selection = null;
+    $("acts").replaceChildren();
+    say("", true);
     return;
   }
 
@@ -334,6 +573,7 @@ function paintTrace() {
     $("hops").replaceChildren(none);
   }
 
+  paintActions();
   paintHistory(player.uuid, player.routeId);
 }
 
@@ -387,38 +627,111 @@ function paintServers() {
 }
 
 function paintPlayers() {
-  const picked = selection && selection.kind === "node" ? selection.id : null;
+  const page = data.page;
+  // Only a selection the proxy is not already narrowing by still dims rows: after a
+  // backend click every row on the page matches, and dimming none of them says nothing.
+  const picked = selection && selection.kind === "node" && !nodeFilter(selection)
+    ? selection.id : null;
   const player = selectedPlayer();
-  const shown = data.players.filter(matchesSearch);
 
-  $("playerCount").textContent = shown.length === data.players.length
-    ? data.players.length + " online"
-    : shown.length + " of " + data.players.length + " shown";
+  $("playerCount").textContent = describePage(page);
 
-  fill($("players"), shown.map(p => {
+  fill($("players"), page.players.map(p => {
     const tr = row([p.username, p.server, p.virtualHost, p.protocol,
                     duration(p.onlineSeconds), p.routeId]);
     tr.classList.add("pick");
     tr.children[5].className = "rid";
     if (player && player.routeId === p.routeId) tr.classList.add("on");
     if (picked && !routesThrough(p, picked)) tr.classList.add("dim");
-    tr.addEventListener("click", () => select({ kind: "player", id: p.routeId }));
+    tr.addEventListener("click", () => select({ kind: "player", id: p.routeId, player: p }));
     return tr;
-  }), 6, search ? "nobody matches “" + search + "”" : "nobody online");
+  }), 6, emptyPlayersText());
+  paintPager(page);
+}
+
+const narrowed = () => !!(search || serverFilter);
+
+function emptyPlayersText() {
+  if (search) return "nobody matches “" + search + "”";
+  if (serverFilter) return "nobody is on " + serverFilter;
+  return "nobody online";
+}
+
+/** "1,203 online", or which slice of what this is once it stops fitting. */
+function describePage(page) {
+  const n = narrowed() ? page.matched : page.total;
+  const noun = narrowed() ? " matching" : " online";
+  const whole = page.offset === 0 && page.players.length >= n;
+  const range = whole ? "" : (page.offset + 1) + "–" + (page.offset + page.players.length) + " of ";
+  return range + formatCount(n) + noun
+    + (serverFilter ? " on " + serverFilter : "")
+    + (narrowed() ? " · " + formatCount(page.total) + " online" : "");
+}
+
+/**
+ * Previous and next, and only when there is somewhere to go.
+ *
+ * Offset paging rather than a cursor, because the proxy orders by name and a name is
+ * stable: a page boundary means the same thing on the next request even as people come
+ * and go. Someone joining shifts a row across a boundary at worst.
+ */
+function paintPager(page) {
+  const host = $("pager");
+  host.replaceChildren();
+  const n = narrowed() ? page.matched : page.total;
+  const last = page.offset + page.players.length;
+  if (page.offset === 0 && last >= n) return;
+
+  const step = (label, to, enabled) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.disabled = !enabled;
+    b.addEventListener("click", () => { offset = to; refresh(); });
+    return b;
+  };
+  host.append(
+    step("‹ prev", Math.max(0, page.offset - page.limit), page.offset > 0),
+    step("next ›", page.offset + page.limit, last < n));
 }
 
 // --------------------------------------------------------------------- plumbing
 
 async function refresh() {
+  const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+  if (search) query.set("q", search);
+  if (serverFilter) query.set("server", serverFilter);
   try {
-    const [overview, servers, groups, players, metrics] = await Promise.all(
-      ["overview", "servers", "groups", "players", "metrics"]
-        .map(p => fetch("api/" + p).then(r => r.json())));
-    data = { overview, servers, groups, players, metrics };
+    const [overview, servers, groups, page, metrics] = await Promise.all([
+      ...["overview", "servers", "groups"].map(p => fetch("api/" + p).then(r => r.json())),
+      fetch("api/players?" + query).then(r => r.json()),
+      fetch("api/metrics").then(r => r.json()),
+    ]);
+    data = { overview, servers, groups, page, metrics };
+    // Keep the traced player's row current while they are on the page. When they are
+    // not, the last-known route stands: "not in this fifty rows" is not "gone", and
+    // the disconnect event below is what actually says they left.
+    if (selection && selection.kind === "player") {
+      const fresh = page.players.find(p => p.routeId === selection.id);
+      if (fresh) selection.player = fresh;
+    }
     paint();
   } catch (e) {
     $("meta").textContent = "cannot reach the proxy";
   }
+}
+
+/**
+ * A refresh soon, rather than one per event.
+ *
+ * Every join, leave and switch used to trigger five immediate fetches. On a quiet test
+ * network that is responsive; on a busy one it is a load generator pointed at the proxy
+ * it is reporting on, and the answers arrive faster than anyone can read them.
+ */
+let pendingRefresh = null;
+function refreshSoon() {
+  if (pendingRefresh) return;
+  pendingRefresh = setTimeout(() => { pendingRefresh = null; refresh(); }, 400);
 }
 
 // ---------------------------------------------------------------------- console
@@ -551,6 +864,12 @@ function connect() {
     // happened. Reading the wrong one made every line in this feed say "event",
     // which is a thing nobody notices because the feed still scrolls.
     const kind = ev.kind;
+    // The trace panel holds its own copy of the traced player, so this is what clears
+    // it. Nothing else can: a player being absent from a page is not a player leaving.
+    if (kind === "PLAYER_DISCONNECTED" && selection && selection.kind === "player"
+        && ev.player && ev.player.routeId === selection.id) {
+      selection = null;
+    }
     if (kind === "PLAYER_CONNECTED") log("joined on " + ev.to, who);
     else if (kind === "PLAYER_DISCONNECTED") log("left" + (ev.from ? " from " + ev.from : ""), who);
     else if (kind === "PLAYER_SWITCHED_SERVER") log("moved " + ev.from + " → " + ev.to, who);
@@ -558,11 +877,19 @@ function connect() {
       // The reason is folded into `to` by the proxy, as "HEALTHY (3 in a row)".
       log("is " + ev.to.toLowerCase() + " (was " + String(ev.from).toLowerCase() + ")", ev.server);
     } else log(kind || "event", who);
-    refresh();
+    refreshSoon();
   };
 }
 
-$("search").addEventListener("input", e => { search = e.target.value.trim(); paintPlayers(); });
+// Debounced, because each keystroke is now a question for the proxy rather than a
+// filter over an array already in the page.
+let typing = null;
+$("search").addEventListener("input", e => {
+  search = e.target.value.trim();
+  offset = 0;
+  clearTimeout(typing);
+  typing = setTimeout(refresh, 200);
+});
 $("logLevel").addEventListener("change", paintConsole);
 $("logSearch").addEventListener("input", paintConsole);
 $("logFollow").addEventListener("change", () => {
@@ -587,6 +914,10 @@ document.addEventListener("keydown", e => {
 async function whoAmI() {
   try {
     const me = await fetch("api/me").then(r => r.json());
+    // Held, not just rendered: the CSRF token and the permission nodes are what decide
+    // which action buttons exist and whether a write request will be accepted.
+    identity = me;
+    paintTrace();
     const host = $("who");
     if (!me.authenticated) {
       host.textContent = me.required ? "" : "open — loopback only, no accounts configured";
@@ -612,6 +943,7 @@ async function whoAmI() {
 
 refresh();
 whoAmI();
+loadAudit();
 loadLog();
 setInterval(refresh, 5000);
 connect();

@@ -52,8 +52,13 @@ const svgText = (attrs, content) => {
  * it when that thing sends a PROXY protocol header, so edges exist in the graph
  * only because some player arrived through one. A network with no upstream simply
  * has no edge tier, which is the truth rather than an omission.
+ *
+ * Those counts used to be derived here by scanning every player's route, which only
+ * worked while the page held every player. They now arrive already totalled on the
+ * player page, so the edge tier says the same thing whether the table is showing
+ * fifty rows or five thousand.
  */
-export function buildGraph(overview, servers, groups, players) {
+export function buildGraph(overview, servers, groups, edges) {
   const nodes = [];
   const links = [];
   const add = (node) => { nodes.push(node); return node; };
@@ -62,14 +67,8 @@ export function buildGraph(overview, servers, groups, players) {
   add({ id: "internet", tier: "INTERNET", title: "Internet",
         sub: totalPlayers === 1 ? "1 player" : totalPlayers + " players" });
 
-  // One edge per distinct upstream seen in a live route.
-  const edgeCounts = new Map();
-  for (const p of players) {
-    for (const hop of p.route || []) {
-      if (hop.kind === "EDGE") edgeCounts.set(hop.name, (edgeCounts.get(hop.name) || 0) + 1);
-    }
-  }
-  for (const [name, count] of edgeCounts) {
+  // One edge per distinct upstream anyone arrived through.
+  for (const { name, players: count } of edges) {
     add({ id: "edge:" + name, tier: "EDGE", title: name, sub: count + " via here" });
     links.push({ from: "internet", to: "edge:" + name, weight: count });
     links.push({ from: "edge:" + name, to: proxyId(overview), weight: count });
@@ -82,7 +81,7 @@ export function buildGraph(overview, servers, groups, players) {
     load: overview && overview.maxPlayers > 0 ? overview.players / overview.maxPlayers : -1,
     badge: overview ? overview.players + " / " + overview.maxPlayers : null,
   });
-  if (!edgeCounts.size) {
+  if (!edges.length) {
     links.push({ from: "internet", to: proxy.id, weight: totalPlayers });
   }
 

@@ -171,12 +171,15 @@ final class ControlClient implements AutoCloseable {
                 LOG.info("Connected to Relay {} (control protocol {})",
                         message.get("relay").getAsString(), message.get("protocol").getAsInt());
             }
-            case "result" -> {
+            // "result" answers a query and "done" answers an action. They carry different
+            // payloads and share one waiting map, because what the caller is waiting for
+            // is the same thing either way: the reply with its id on it.
+            case "result", "done" -> {
                 CompletableFuture<JsonElement> future = message.has("id")
                         ? pending.remove(message.get("id").getAsInt())
                         : null;
                 if (future != null) {
-                    future.complete(message.get("data"));
+                    future.complete(message.has("data") ? message.get("data") : message);
                 }
             }
             // Log lines ride the same consumer as state events. They are told apart by
@@ -238,6 +241,57 @@ final class ControlClient implements AutoCloseable {
             LOG.debug("Query '{}' failed", what, e);
             return com.google.gson.JsonNull.INSTANCE;
         }
+    }
+
+    /**
+     * Asks the proxy to do something, and waits for it to say what happened.
+     *
+     * <p>Separate from {@link #query} because the two mean different things to everyone
+     * reading this code later: one of these can change the network. The wire shape differs
+     * too -- an action answers with its own outcome rather than a collection.
+     *
+     * @param request the action, its target and its arguments. The caller has already
+     *                decided the signed-in account may do this; the proxy is told who so
+     *                that it can write the audit row
+     * @return the proxy's answer, or a refusal saying it could not be reached. Never null:
+     *         a button that does nothing and says nothing is the worst of the options
+     */
+    JsonObject act(JsonObject request) {
+        if (!connected) {
+            return refusal("The proxy is not reachable from the dashboard right now");
+        }
+        int id = nextId.getAndIncrement();
+        CompletableFuture<JsonElement> future = new CompletableFuture<>();
+        pending.put(id, future);
+
+        request.addProperty("type", "do");
+        request.addProperty("id", id);
+        try {
+            send(request);
+            JsonElement reply = future.get(QUERY_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            return reply != null && reply.isJsonObject()
+                    ? reply.getAsJsonObject()
+                    : refusal("The proxy answered in a shape this dashboard does not understand");
+        } catch (IOException | InterruptedException | ExecutionException | TimeoutException e) {
+            pending.remove(id);
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            LOG.warn("Action '{}' failed", request.get("action"), e);
+            // Deliberately does not say it failed, because it may not have: the proxy
+            // could have acted and been slow to answer. An operator who is told "no" and
+            // clicks again would drain a backend twice.
+            return refusal("No answer from the proxy; check whether it took effect before "
+                    + "trying again");
+        }
+    }
+
+    private static JsonObject refusal(String message) {
+        JsonObject answer = new JsonObject();
+        answer.addProperty("type", "done");
+        answer.addProperty("ok", false);
+        answer.addProperty("message", message);
+        return answer;
     }
 
     private synchronized void send(JsonObject message) throws IOException {

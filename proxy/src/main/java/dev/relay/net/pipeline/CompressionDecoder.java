@@ -24,19 +24,92 @@ public final class CompressionDecoder extends MessageToMessageDecoder<ByteBuf> {
     private final Inflater inflater = new Inflater();
     private final int threshold;
 
+    /**
+     * The frame most recently decoded, in the form it arrived in, and what it inflated to.
+     *
+     * <p>Kept so the other side of the proxy can forward the original rather than deflate
+     * a fresh copy of the same data -- see {@link CompressionEncoder} for why that is the
+     * expensive half. Only the last one is held: a frame is decoded and delivered before
+     * the next is decoded, so at most one is ever in flight.
+     *
+     * <p>{@link #takeOriginalFor} checks the inflated buffer's <em>identity</em> before
+     * handing the original back. That is what makes this safe rather than clever: if the
+     * pipeline ever stops being one-frame-at-a-time, the check fails, the caller gets null
+     * and compresses normally. The failure mode is a lost optimisation, not a corrupted
+     * stream.
+     */
+    private ByteBuf lastOriginal;
+    private ByteBuf lastInflated;
+
     public CompressionDecoder(int threshold) {
         this.threshold = threshold;
     }
 
+    /** The threshold this connection negotiated, for deciding whether a peer can reuse it. */
+    public int threshold() {
+        return threshold;
+    }
+
+    /**
+     * Hands over the compressed bytes {@code inflated} came from, and forgets them.
+     *
+     * @return the original frame, whose ownership passes to the caller, or null if this is
+     *         not the frame just decoded
+     */
+    public ByteBuf takeOriginalFor(ByteBuf inflated) {
+        if (lastInflated != inflated || lastOriginal == null) {
+            return null;
+        }
+        ByteBuf original = lastOriginal;
+        lastOriginal = null;
+        lastInflated = null;
+        return original;
+    }
+
+    /** Drops any original nobody claimed, so a frame Relay intercepted does not leak. */
+    private void forgetOriginal() {
+        if (lastOriginal != null) {
+            lastOriginal.release();
+            lastOriginal = null;
+        }
+        lastInflated = null;
+    }
+
+    private void remember(ByteBuf original, ByteBuf inflated) {
+        forgetOriginal();
+        lastOriginal = original;
+        lastInflated = inflated;
+    }
+
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws DataFormatException {
-        int claimedSize = ProtocolUtils.readVarInt(in);
-        if (claimedSize == 0) {
-            // Below the threshold, so it was sent uncompressed.
-            out.add(in.retainedSlice());
-            in.skipBytes(in.readableBytes());
-            return;
+        // Taken before anything is read, so it is the frame exactly as it arrived --
+        // size marker included, which is what the far side would have to write anyway.
+        ByteBuf original = in.retainedSlice(in.readerIndex(), in.readableBytes());
+        boolean kept = false;
+        try {
+            int claimedSize = ProtocolUtils.readVarInt(in);
+            if (claimedSize == 0) {
+                // Below the threshold, so it was sent uncompressed.
+                ByteBuf raw = in.retainedSlice();
+                in.skipBytes(in.readableBytes());
+                remember(original, raw);
+                kept = true;
+                out.add(raw);
+                return;
+            }
+            decodeCompressed(ctx, in, out, claimedSize, original);
+            kept = true;
+        } finally {
+            if (!kept) {
+                original.release();
+            }
         }
+    }
+
+    private void decodeCompressed(ChannelHandlerContext ctx, ByteBuf in, List<Object> out,
+                                  int claimedSize, ByteBuf original) throws DataFormatException {
+        {
         if (claimedSize < threshold) {
             throw new ProtocolException("Compressed frame claims size " + claimedSize
                     + ", below the negotiated threshold " + threshold);
@@ -46,10 +119,12 @@ public final class CompressionDecoder extends MessageToMessageDecoder<ByteBuf> {
                     + ", exceeding the maximum " + MAX_UNCOMPRESSED_SIZE);
         }
 
+        }
         ByteBuf decompressed = ctx.alloc().buffer(claimedSize);
         boolean success = false;
         try {
             inflate(in, decompressed, claimedSize);
+            remember(original, decompressed);
             out.add(decompressed);
             success = true;
         } finally {
@@ -88,6 +163,7 @@ public final class CompressionDecoder extends MessageToMessageDecoder<ByteBuf> {
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
+        forgetOriginal();
         inflater.end();
     }
 }

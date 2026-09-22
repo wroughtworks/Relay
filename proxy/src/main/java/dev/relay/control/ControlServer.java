@@ -2,6 +2,7 @@ package dev.relay.control;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.relay.log.LogTail;
@@ -55,6 +56,14 @@ import java.util.Base64;
  *   <li>{@code {"type":"hello","token":"..."}} &rarr; {@code {"type":"welcome",...}}</li>
  *   <li>{@code {"type":"query","id":1,"what":"servers"}} &rarr;
  *       {@code {"type":"result","id":1,"data":[...]}}</li>
+ *   <li>{@code players} and {@code history} take optional narrowing fields on the same
+ *       envelope: {@code q}, {@code server}, {@code offset}, {@code limit} and
+ *       {@code uuid}. {@code players} answers with a page object rather than a list,
+ *       because the whole list is not an answer on a large network</li>
+ *   <li>{@code {"type":"do","id":2,"action":"drain","target":"lobby","by":"carson"}} &rarr;
+ *       {@code {"type":"done","id":2,"ok":true,"message":"..."}}. Its own message type
+ *       rather than another query, so reading a companion's traffic makes plain which of
+ *       its messages could have changed the network</li>
  *   <li>{@code {"type":"event",...}} pushed as they happen, unrequested</li>
  *   <li>{@code {"type":"goodbye"}} when the proxy is stopping, so a companion can exit
  *       cleanly rather than being killed</li>
@@ -64,14 +73,19 @@ public final class ControlServer {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControlServer.class);
 
-    /** Bumped when the shape changes, so a stale companion says so instead of misreading. */
-    public static final int PROTOCOL_VERSION = 1;
+    /**
+     * Bumped when the shape changes, so a stale companion says so instead of misreading.
+     *
+     * <p>2: {@code players} answers with a page object instead of a list.
+     */
+    public static final int PROTOCOL_VERSION = 2;
 
     /** A line longer than this is not a control message; something is wrong upstream. */
     private static final int MAX_LINE = 1 << 20;
 
     private final RelayProxy proxy;
     private final ControlState state;
+    private final ControlActions actions;
     private final Gson gson = new GsonBuilder().serializeNulls().create();
     private final String token = generateToken();
 
@@ -113,6 +127,7 @@ public final class ControlServer {
     public ControlServer(RelayProxy proxy) {
         this.proxy = proxy;
         this.state = new ControlState(proxy);
+        this.actions = new ControlActions(proxy);
     }
 
     public String token() {
@@ -247,6 +262,8 @@ public final class ControlServer {
             }
             if ("query".equals(type)) {
                 answer(ctx, message);
+            } else if ("do".equals(type)) {
+                act(ctx, message);
             }
             // Anything else is ignored rather than an error: a companion built against a
             // newer proxy may send things this one has never heard of, and that should
@@ -277,16 +294,17 @@ public final class ControlServer {
                 case "overview" -> state.overview();
                 case "servers" -> state.servers();
                 case "groups" -> state.groups();
-                case "players" -> state.players();
                 case "metrics" -> state.metrics();
                 case "log" -> LogTail.recent();
-                // The only query that takes arguments. Kept as optional fields on the
-                // same envelope rather than a second message type, since "ask for a
+                // The queries that take arguments. Kept as optional fields on the same
+                // envelope rather than separate message types, since "ask for a
                 // collection" is one idea whichever way it is narrowed.
+                case "players" -> state.players(
+                        text(message, "q"), text(message, "server"),
+                        number(message, "offset", 0), number(message, "limit", 100));
+                case "audit" -> state.auditLog(number(message, "limit", 50));
                 case "history" -> state.history(
-                        message.has("uuid") && !message.get("uuid").isJsonNull()
-                                ? message.get("uuid").getAsString() : null,
-                        message.has("limit") ? message.get("limit").getAsInt() : 50);
+                        text(message, "uuid"), number(message, "limit", 50));
                 default -> null;
             };
 
@@ -300,10 +318,83 @@ public final class ControlServer {
             ctx.writeAndFlush(gson.toJson(result) + "\n");
         }
 
+        /**
+         * Runs an action and says what happened.
+         *
+         * <p>A separate message type from {@code query} rather than another {@code what},
+         * so that reading a companion's traffic makes plain which of its messages could
+         * have changed the network. An unknown action is refused by name, not ignored:
+         * silence is how "this proxy is too old for that button" looks identical to "it
+         * worked", and one of those needs saying.
+         */
+        private void act(ChannelHandlerContext ctx, JsonObject message) {
+            String what = text(message, "action");
+            String actor = text(message, "by");
+            String target = text(message, "target");
+            ControlActions.Result result = switch (what == null ? "" : what) {
+                case "drain" -> actions.drain(actor, target, bool(message, "on", true));
+                case "send" -> actions.send(actor, target, text(message, "to"));
+                case "evacuate" -> actions.evacuate(actor, target, text(message, "to"));
+                case "kick" -> actions.kick(actor, target, text(message, "reason"));
+                default -> new ControlActions.Result(false,
+                        "This proxy has no action called '" + what + "'");
+            };
+
+            JsonObject done = new JsonObject();
+            done.addProperty("type", "done");
+            if (message.has("id")) {
+                done.add("id", message.get("id"));
+            }
+            done.addProperty("action", what);
+            done.addProperty("ok", result.ok());
+            done.addProperty("message", result.message());
+            ctx.writeAndFlush(gson.toJson(done) + "\n");
+        }
+
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             LOG.debug("Control connection failed", cause);
             ctx.close();
+        }
+    }
+
+    /**
+     * An optional string argument, or null.
+     *
+     * <p>A wrong type reads as absent rather than closing the connection, for the same
+     * reason an unknown message does: a companion getting an argument wrong should lose
+     * the narrowing, not the socket.
+     */
+    private static String text(JsonObject message, String field) {
+        JsonElement value = message.get(field);
+        if (value == null || !value.isJsonPrimitive()) {
+            return null;
+        }
+        String string = value.getAsString();
+        return string.isBlank() ? null : string;
+    }
+
+    private static boolean bool(JsonObject message, String field, boolean fallback) {
+        JsonElement value = message.get(field);
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsBoolean();
+        } catch (RuntimeException notABoolean) {
+            return fallback;
+        }
+    }
+
+    private static int number(JsonObject message, String field, int fallback) {
+        JsonElement value = message.get(field);
+        if (value == null || !value.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return value.getAsInt();
+        } catch (RuntimeException notANumber) {
+            return fallback;
         }
     }
 

@@ -102,7 +102,9 @@ public final class BackendPlaySessionHandler implements SessionHandler {
             return;
         }
         if (player.connectedServer() == server && player.isActive()) {
-            player.connection().relay(msg);
+            // relayFrom rather than relay: this is the direction that carries world data,
+            // and the backend has already compressed it once.
+            player.connection().relayFrom(server.connection(), msg);
             delivered++;
         }
         // Traffic from a backend the player has already left is discarded: they are

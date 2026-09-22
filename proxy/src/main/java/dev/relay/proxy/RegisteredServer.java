@@ -29,13 +29,21 @@ public final class RegisteredServer {
      */
     private volatile BackendStats stats;
 
+    private final double weight;
+
     public RegisteredServer(ServerEntry entry) {
         this.name = entry.name();
         this.address = entry.address();
+        this.weight = entry.weight();
     }
 
     public String name() {
         return name;
+    }
+
+    /** Configured share of a group's traffic, for weighted balancing. Always above zero. */
+    public double weight() {
+        return weight;
     }
 
     public InetSocketAddress address() {

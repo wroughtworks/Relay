@@ -2,6 +2,10 @@ rootProject.name = "relay"
 
 include("proxy", "paper-plugin", "dashboard")
 
+// Worked examples. Not shipped with the proxy; built so they keep compiling against
+// the APIs they demonstrate, which is what stops an example rotting into a lie.
+include("examples:block-mirror")
+
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
@@ -44,6 +48,10 @@ dependencyResolutionManagement {
             library("logback", "ch.qos.logback", "logback-classic").version("1.5.12")
 
             library("paper-api", "io.papermc.paper", "paper-api").versionRef("paper")
+
+            // Bytecode reading, for the architecture rules in proxy's tests. Test-only:
+            // nothing Relay ships manipulates bytecode.
+            library("asm", "org.ow2.asm", "asm").version("9.7.1")
 
             library("junit-bom", "org.junit", "junit-bom").version("5.11.3")
             library("junit-jupiter", "org.junit.jupiter", "junit-jupiter").withoutVersion()

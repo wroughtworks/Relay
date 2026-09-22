@@ -148,6 +148,46 @@ class ControlServerTest {
         }
     }
 
+    /**
+     * The narrowing arguments have to survive the wire, not just the method signature.
+     *
+     * <p>{@link PlayerPageTest} covers what paging means; what is at risk here is the
+     * envelope. The fields are optional and arrive as JSON, so a companion that sends
+     * none, or sends a string where a number belongs, must get a sensible page rather
+     * than an exception or the whole network.
+     */
+    @Test
+    void narrowsThePlayerListFromArgumentsOnTheQuery(@TempDir Path dir) throws Exception {
+        int port = start(dir);
+
+        try (Companion companion = new Companion(port)) {
+            companion.hello(proxy.control().token());
+            for (String name : List.of("Alice", "Bob", "Carol")) {
+                proxy.players().add(player(name));
+            }
+
+            companion.send("{\"type\":\"query\",\"id\":1,\"what\":\"players\",\"limit\":2}");
+            JsonObject page = companion.readJsonOfType("result").getAsJsonObject("data");
+            assertEquals(3, page.get("total").getAsInt());
+            assertEquals(3, page.get("matched").getAsInt());
+            assertEquals(2, page.getAsJsonArray("players").size());
+            assertEquals("Alice",
+                    page.getAsJsonArray("players").get(0).getAsJsonObject().get("username").getAsString());
+
+            companion.send("{\"type\":\"query\",\"id\":2,\"what\":\"players\",\"q\":\"bo\"}");
+            JsonObject found = companion.readJsonOfType("result").getAsJsonObject("data");
+            assertEquals(1, found.get("matched").getAsInt());
+            assertEquals("Bob",
+                    found.getAsJsonArray("players").get(0).getAsJsonObject().get("username").getAsString());
+
+            // Nonsense where a number belongs costs the narrowing, not the connection --
+            // the same bargain the unknown-message case above strikes.
+            companion.send("{\"type\":\"query\",\"id\":3,\"what\":\"players\",\"limit\":\"lots\"}");
+            JsonObject fallback = companion.readJsonOfType("result").getAsJsonObject("data");
+            assertEquals(3, fallback.getAsJsonArray("players").size());
+        }
+    }
+
     @Test
     void staysShutWhenControlIsDisabled(@TempDir Path dir) throws Exception {
         int port = freePort();

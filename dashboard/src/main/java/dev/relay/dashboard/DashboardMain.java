@@ -8,6 +8,7 @@ import dev.relay.dashboard.auth.Auth;
 import dev.relay.dashboard.auth.Sessions;
 import dev.relay.dashboard.auth.UserStore;
 import io.javalin.Javalin;
+import io.javalin.http.Context;
 import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JsonMapper;
 import io.javalin.websocket.WsContext;
@@ -61,6 +62,10 @@ public final class DashboardMain {
      * round trip while staying far below anything a person perceives as stale.
      */
     private static final long CACHE_MILLIS = 500;
+
+    /** The right shape with nothing in it, for when the proxy cannot be reached. */
+    private static final String EMPTY_PAGE =
+            "{\"total\":0,\"matched\":0,\"offset\":0,\"limit\":0,\"players\":[],\"edges\":[]}";
 
     private final Gson gson = new GsonBuilder().serializeNulls().create();
     private final Set<WsContext> browsers = ConcurrentHashMap.newKeySet();
@@ -146,9 +151,28 @@ public final class DashboardMain {
         // not this process's: the dashboard renders what Relay reports and invents nothing.
         server.get("/api/health", ctx -> ctx.json(Map.of(
                 "status", control.isConnected() ? "ok" : "disconnected")));
-        for (String what : new String[] {"overview", "servers", "groups", "players", "metrics", "log"}) {
+        for (String what : new String[] {"overview", "servers", "groups", "metrics", "log"}) {
             server.get("/api/" + what, ctx -> ctx.contentType("application/json").result(ask(what)));
         }
+
+        // The player list is a page, narrowed by the proxy rather than by the browser.
+        // Sending everyone and filtering in JavaScript was fine for a test network and
+        // is not survivable on a real one: it is the whole player list, each row
+        // carrying a freshly walked route, rebuilt every five seconds per open tab.
+        //
+        // Uncached for the same reason /api/history is -- the answer depends on the
+        // arguments, and one cache slot per endpoint would serve one tab's filter to
+        // the next tab. Paging is what made that affordable.
+        server.get("/api/players", ctx -> {
+            JsonObject narrow = new JsonObject();
+            narrow.addProperty("q", ctx.queryParam("q"));
+            narrow.addProperty("server", ctx.queryParam("server"));
+            narrow.addProperty("offset", parseOffset(ctx.queryParam("offset")));
+            narrow.addProperty("limit", parseLimit(ctx.queryParam("limit")));
+            JsonElement data = control.query("players", narrow);
+            ctx.contentType("application/json")
+                    .result(data == null || data.isJsonNull() ? EMPTY_PAGE : gson.toJson(data));
+        });
 
         // History takes arguments, so it is not part of the cached pass-through above:
         // caching one player's sessions under the key "history" would answer the next
@@ -164,6 +188,19 @@ public final class DashboardMain {
             ctx.contentType("application/json")
                     .result(data == null || data.isJsonNull() ? "[]" : gson.toJson(data));
         });
+
+        // Recent actions and who took them (spec 11.2). Readable by anyone who can see
+        // the dashboard: an audit log that only the people who can act may read is an
+        // audit log that cannot be used to check up on them.
+        server.get("/api/audit", ctx -> {
+            JsonObject narrow = new JsonObject();
+            narrow.addProperty("limit", parseLimit(ctx.queryParam("limit")));
+            JsonElement data = control.query("audit", narrow);
+            ctx.contentType("application/json")
+                    .result(data == null || data.isJsonNull() ? "[]" : gson.toJson(data));
+        });
+
+        actions();
 
         server.ws("/api/events", ws -> {
             ws.onConnect(ctx -> {
@@ -185,12 +222,107 @@ public final class DashboardMain {
         });
     }
 
+    /**
+     * The endpoints that change something (spec 9.3).
+     *
+     * <p>Every one of them is the same four steps in the same order, which is why they are
+     * written through one helper rather than four times: check CSRF, check the permission
+     * node, ask the proxy, report what it said. A list of actions where one of them does
+     * those in a different order, or skips one, is how an action surface grows a hole.
+     *
+     * <p>The permission nodes are spec 9.7's, the ones {@code UserStore} has been handing
+     * out since before anything could act. Moving people between backends and disconnecting
+     * them are a moderator's; draining a backend is as well, because taking one out of
+     * rotation is the safe half of a restart and waiting for an admin to wake up is how it
+     * gets done with a kill instead.
+     */
+    private void actions() {
+        act("/api/actions/drain", "relay.server.drain", (ctx, request) -> {
+            request.addProperty("action", "drain");
+            request.addProperty("target", ctx.queryParam("server"));
+            request.addProperty("on", !"false".equals(ctx.queryParam("on")));
+        });
+        act("/api/actions/send", "relay.player.send", (ctx, request) -> {
+            request.addProperty("action", "send");
+            request.addProperty("target", ctx.queryParam("player"));
+            request.addProperty("to", ctx.queryParam("to"));
+        });
+        act("/api/actions/evacuate", "relay.player.send", (ctx, request) -> {
+            request.addProperty("action", "evacuate");
+            request.addProperty("target", ctx.queryParam("server"));
+            request.addProperty("to", ctx.queryParam("to"));
+        });
+        act("/api/actions/kick", "relay.player.kick", (ctx, request) -> {
+            request.addProperty("action", "kick");
+            request.addProperty("target", ctx.queryParam("player"));
+            request.addProperty("reason", ctx.queryParam("reason"));
+        });
+    }
+
+    private interface Request {
+        void fill(Context ctx, JsonObject request);
+    }
+
+    private void act(String path, String node, Request fill) {
+        server.post(path, ctx -> {
+            // CSRF first. A request that should never have reached this endpoint is not
+            // one to answer questions about -- including whether the account it carried
+            // would have been allowed.
+            if (!auth.csrfOk(ctx)) {
+                LOG.warn("Refused {} from {}: the CSRF token was missing or wrong",
+                        path, ctx.ip());
+                ctx.status(403).json(Map.of("ok", false, "message",
+                        "This page's security token is stale. Reload and try again."));
+                return;
+            }
+            if (!auth.may(ctx, node)) {
+                String who = actor(ctx);
+                LOG.warn("Refused {} for {}: {} is not held", path, who, node);
+                ctx.status(403).json(Map.of("ok", false, "message",
+                        "Your account does not hold " + node + "."));
+                return;
+            }
+
+            JsonObject request = new JsonObject();
+            request.addProperty("by", actor(ctx));
+            fill.fill(ctx, request);
+            JsonObject done = control.act(request);
+
+            // 409 rather than 400 for a refusal: the request was well formed and the
+            // caller is allowed: the network was simply not in a state where it made
+            // sense. A page that shows the proxy's own sentence either way needs the
+            // difference in the status, not the body.
+            boolean ok = done.has("ok") && done.get("ok").getAsBoolean();
+            ctx.status(ok ? 200 : 409).contentType("application/json").result(gson.toJson(done));
+        });
+    }
+
+    /**
+     * Who to write in the audit row.
+     *
+     * <p>Named honestly when there is nobody signed in. That only happens in the
+     * loopback-with-no-accounts mode, which is the development default, and an audit log
+     * that said "admin" for it would be inventing a person.
+     */
+    private String actor(Context ctx) {
+        return auth.user(ctx).map(UserStore.User::username)
+                .orElse(auth.required() ? "unknown" : "anonymous (no accounts configured)");
+    }
+
     /** Clamped here as well as in the proxy: a companion should not be able to ask for a million rows. */
     private static int parseLimit(String raw) {
         try {
             return Math.max(1, Math.min(Integer.parseInt(raw), 200));
         } catch (RuntimeException notANumber) {
             return 50;
+        }
+    }
+
+    private static int parseOffset(String raw) {
+        try {
+            return Math.max(0, Integer.parseInt(raw));
+        } catch (RuntimeException notANumber) {
+            return 0;
         }
     }
 
